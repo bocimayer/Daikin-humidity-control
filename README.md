@@ -153,6 +153,86 @@ curl http://localhost:8080/healthz
 
 ---
 
+## CI/CD Pipeline
+
+Two GitHub Actions workflows handle testing and deployment automatically.
+
+### Workflows
+
+| File | Trigger | What it does |
+|---|---|---|
+| `.github/workflows/ci.yml` | Every push / PR | Type-check, test, build — fast feedback |
+| `.github/workflows/deploy.yml` | Push to `main` / manual | Build Docker image → push to Artifact Registry → deploy Cloud Run → smoke test |
+
+Authentication uses **Workload Identity Federation** (keyless — no long-lived SA JSON key stored in GitHub).
+
+### First-time setup (run once locally)
+
+```bash
+export PROJECT_ID=your-gcp-project-id
+export REGION=europe-west1
+export GITHUB_ORG=bocimayer
+export GITHUB_REPO=Daikin-humidity-control
+
+bash setup/bootstrap.sh
+```
+
+The script:
+1. Enables required GCP APIs
+2. Creates an Artifact Registry Docker repository (`daikin`)
+3. Creates a deploy service account (`daikin-deploy-sa`) with the minimum roles
+4. Creates a scheduler service account (`daikin-scheduler-sa`)
+5. Prompts for Daikin secret values and stores them in Secret Manager
+6. Sets up Workload Identity Federation (GitHub → GCP, no JSON key)
+7. Prints the exact GitHub secrets you need to add
+
+### GitHub secrets to configure
+
+After running bootstrap.sh, go to **Settings → Secrets and variables → Actions** and add:
+
+| Secret | Example value |
+|---|---|
+| `GCP_PROJECT_ID` | `my-gcp-project-123` |
+| `GCP_REGION` | `europe-west1` |
+| `GCP_DEPLOY_SA` | `daikin-deploy-sa@my-gcp-project-123.iam.gserviceaccount.com` |
+| `GCP_WORKLOAD_IDENTITY_PROVIDER` | `projects/123456/locations/global/workloadIdentityPools/github-pool/providers/github-provider` |
+| `DAIKIN_DEVICE_IDS_JSON` | `["uuid-1","uuid-2"]` |
+| `DAIKIN_HUMIDITY_LEADER_IDS_JSON` | `["uuid-1"]` |
+| `HEAT_TARGET_TEMP_C` *(optional)* | `16` |
+| `HUMIDITY_HIGH_THRESHOLD` *(optional)* | `70` |
+| `HUMIDITY_LOW_THRESHOLD` *(optional)* | `60` |
+| `MODE_STRATEGY` *(optional)* | `timer` |
+| `DRY_DURATION_MINUTES` *(optional)* | `120` |
+| `LOG_LEVEL` *(optional)* | `info` |
+
+> The Daikin credentials (`DAIKIN_CLIENT_ID`, `DAIKIN_CLIENT_SECRET`, `DAIKIN_REFRESH_TOKEN`) live
+> only in Secret Manager. Cloud Run reads them at runtime — they are never in GitHub.
+
+### Deploy
+
+Once secrets are set, push to `main`:
+
+```bash
+git push origin main
+```
+
+The pipeline runs tests first; if they pass it builds the image, pushes to Artifact Registry, deploys to Cloud Run, and runs a `/healthz` smoke test. The job summary shows the deployed URL.
+
+For a manual trigger: **Actions → Deploy to Cloud Run → Run workflow**.
+
+### Create Cloud Scheduler jobs (run once after first deploy)
+
+```bash
+export PROJECT_ID=your-gcp-project-id
+export REGION=europe-west1
+export MODE_STRATEGY=timer           # or: humidity
+export TIME_ZONE="Europe/Budapest"
+
+bash setup/create-scheduler-jobs.sh
+```
+
+---
+
 ## GCP Deployment
 
 ### Prerequisites
