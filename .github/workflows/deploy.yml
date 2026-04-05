@@ -1,11 +1,13 @@
 name: Deploy to Cloud Run
 
 # Triggers:
-#   - Push to main          → automatic deploy
-#   - Manual dispatch       → choose environment (defaults to production)
+#   - Push to main or the active development branch → automatic deploy
+#   - Manual dispatch → run from any branch on demand
 on:
   push:
-    branches: [main]
+    branches:
+      - main
+      - claude/daikin-gcp-automation-5okfl
   workflow_dispatch:
     inputs:
       environment:
@@ -19,7 +21,7 @@ env:
   # ── Set these in GitHub → Settings → Secrets and variables → Actions ─────
   # Required secrets:
   #   GCP_PROJECT_ID                    e.g. my-gcp-project-123
-  #   GCP_REGION                        e.g. europe-west1
+  #   GCP_REGION                        e.g. europe-central2
   #   GCP_WORKLOAD_IDENTITY_PROVIDER    projects/PROJECT_NUMBER/locations/global/workloadIdentityPools/POOL/providers/PROVIDER
   #   GCP_DEPLOY_SA                     deploy-sa@my-gcp-project-123.iam.gserviceaccount.com
   #   DAIKIN_DEVICE_IDS_JSON            ["uuid-1","uuid-2"]
@@ -33,7 +35,7 @@ env:
   #   LOG_LEVEL                         default: info
 
   SERVICE_NAME: daikin-humidity-control
-  IMAGE_NAME: ${{ vars.GCP_REGION || 'europe-west1' }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/daikin/${{ github.event.repository.name }}
+  IMAGE_NAME: ${{ vars.GCP_REGION || 'europe-central2' }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/daikin/${{ github.event.repository.name }}
 
 jobs:
   deploy:

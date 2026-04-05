@@ -7,7 +7,7 @@
 #
 # Usage:
 #   export PROJECT_ID=your-gcp-project-id
-#   export REGION=europe-west1
+#   export REGION=europe-central2
 #   export MODE_STRATEGY=timer        # or: humidity
 #   export TIME_ZONE="Europe/Budapest"
 #   bash setup/create-scheduler-jobs.sh
@@ -15,8 +15,8 @@
 
 set -euo pipefail
 
-: "${PROJECT_ID:?Set PROJECT_ID}"
-: "${REGION:?Set REGION}"
+: "${PROJECT_ID:=tihany-daikin-humidity}"
+: "${REGION:=europe-central2}"
 : "${MODE_STRATEGY:=timer}"
 : "${TIME_ZONE:=Europe/Budapest}"
 

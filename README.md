@@ -170,7 +170,7 @@ Authentication uses **Workload Identity Federation** (keyless — no long-lived 
 
 ```bash
 export PROJECT_ID=your-gcp-project-id
-export REGION=europe-west1
+export REGION=europe-central2
 export GITHUB_ORG=bocimayer
 export GITHUB_REPO=Daikin-humidity-control
 
@@ -193,7 +193,7 @@ After running bootstrap.sh, go to **Settings → Secrets and variables → Actio
 | Secret | Example value |
 |---|---|
 | `GCP_PROJECT_ID` | `my-gcp-project-123` |
-| `GCP_REGION` | `europe-west1` |
+| `GCP_REGION` | `europe-central2` |
 | `GCP_DEPLOY_SA` | `daikin-deploy-sa@my-gcp-project-123.iam.gserviceaccount.com` |
 | `GCP_WORKLOAD_IDENTITY_PROVIDER` | `projects/123456/locations/global/workloadIdentityPools/github-pool/providers/github-provider` |
 | `DAIKIN_DEVICE_IDS_JSON` | `["uuid-1","uuid-2"]` |
@@ -224,7 +224,7 @@ For a manual trigger: **Actions → Deploy to Cloud Run → Run workflow**.
 
 ```bash
 export PROJECT_ID=your-gcp-project-id
-export REGION=europe-west1
+export REGION=europe-central2
 export MODE_STRATEGY=timer           # or: humidity
 export TIME_ZONE="Europe/Budapest"
 
@@ -239,7 +239,7 @@ bash setup/create-scheduler-jobs.sh
 
 ```bash
 export PROJECT_ID=your-gcp-project-id
-export REGION=europe-west1          # adjust to your preferred region
+export REGION=europe-central2          # adjust to your preferred region
 export SERVICE_NAME=daikin-humidity-control
 export SCHEDULER_SA=daikin-scheduler-sa
 ```

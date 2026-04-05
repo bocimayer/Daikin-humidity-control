@@ -12,7 +12,7 @@
 #
 # Usage:
 #   export PROJECT_ID=your-gcp-project-id
-#   export REGION=europe-west1
+#   export REGION=europe-central2
 #   export GITHUB_ORG=bocimayer
 #   export GITHUB_REPO=Daikin-humidity-control
 #   bash setup/bootstrap.sh
@@ -21,10 +21,10 @@
 set -euo pipefail
 
 # ── Required env vars ─────────────────────────────────────────────────────────
-: "${PROJECT_ID:?Set PROJECT_ID}"
-: "${REGION:?Set REGION}"
-: "${GITHUB_ORG:?Set GITHUB_ORG}"
-: "${GITHUB_REPO:?Set GITHUB_REPO}"
+: "${PROJECT_ID:=tihany-daikin-humidity}"
+: "${REGION:=europe-central2}"
+: "${GITHUB_ORG:=bocimayer}"
+: "${GITHUB_REPO:=Daikin-humidity-control}"
 
 # ── Derived names (change only if you need different names) ───────────────────
 SERVICE_NAME="daikin-humidity-control"
