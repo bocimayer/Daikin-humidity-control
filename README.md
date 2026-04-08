@@ -471,8 +471,19 @@ The Onecta API uses an Authorization Code OAuth2 flow for initial setup. Since
 this service runs unattended, the one-time flow must be completed locally:
 
 1. Register a developer app at <https://developer.onecta.daikineurope.com/>.
-2. Note your `client_id`, `client_secret`, and the redirect URI you registered.
-3. Construct the authorization URL and open it in a browser:
+2. Put `DAIKIN_CLIENT_ID`, `DAIKIN_CLIENT_SECRET`, and `DAIKIN_REDIRECT_URI` in `.env`
+   (`DAIKIN_REDIRECT_URI` must match the redirect URI registered in the portal exactly).
+3. Print the authorize URL, open it in a browser, then exchange the returned `code`:
+   ```bash
+   npm run daikin:oauth-url
+   npm run daikin:oauth-exchange -- '<paste-code-from-browser>'
+   ```
+   (Script: `setup/oauth-onboarding/onecta-oauth-setup.js` — loads `.env` from the repo root.)
+4. Copy the printed `refresh_token` into `DAIKIN_REFRESH_TOKEN` in `.env` and in Secret Manager for Cloud Run.
+
+**Manual alternative** (same result as the script):
+
+1. Open an authorize URL built like:
    ```
    https://idp.onecta.daikineurope.com/v1/oidc/authorize
      ?response_type=code
@@ -480,8 +491,8 @@ this service runs unattended, the one-time flow must be completed locally:
      &redirect_uri=YOUR_REDIRECT_URI
      &scope=openid%20onecta:basic.integration
    ```
-4. After login and consent, capture the `code` from the redirect URL.
-5. Exchange it for tokens:
+2. After login and consent, capture the `code` from the redirect URL.
+3. Exchange it for tokens:
    ```bash
    curl -X POST https://idp.onecta.daikineurope.com/v1/oidc/token \
      -H 'Content-Type: application/x-www-form-urlencoded' \
@@ -491,8 +502,9 @@ this service runs unattended, the one-time flow must be completed locally:
      -d 'code=YOUR_AUTH_CODE' \
      -d 'redirect_uri=YOUR_REDIRECT_URI'
    ```
-6. Store the returned `refresh_token` in Secret Manager as `DAIKIN_REFRESH_TOKEN`.
-   The service will use it to obtain short-lived access tokens automatically.
+
+4. Store the returned `refresh_token` in `.env` / Secret Manager as `DAIKIN_REFRESH_TOKEN`
+   (same as step 4 above). The service uses it to obtain short-lived access tokens automatically.
 
 > **Note**: Refresh tokens may have a long expiry or be perpetual for private
 > developer apps. Check the Daikin developer portal terms for your app type.
