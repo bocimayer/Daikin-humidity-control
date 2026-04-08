@@ -1,0 +1,87 @@
+# Public stub: stable Cloud Run URL for Daikin OAuth redirect_uri (non-localhost).
+# Main app (daikin-humidity-control) stays IAM-only; this service is allow-unauthenticated.
+name: Deploy OAuth stub (Cloud Run)
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - claude/daikin-gcp-automation-5okfl
+    paths:
+      - "oauth-stub/**"
+      - ".github/workflows/deploy-oauth-stub.yml"
+
+env:
+  STUB_SERVICE_NAME: daikin-oauth-stub
+
+jobs:
+  deploy-stub:
+    name: Build & deploy OAuth stub
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_DEPLOY_SA }}
+
+      - name: Set up gcloud CLI
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ secrets.GCP_PROJECT_ID }}
+
+      - name: Configure Docker for Artifact Registry
+        run: |
+          gcloud auth configure-docker ${{ secrets.GCP_REGION }}-docker.pkg.dev --quiet
+
+      - name: Build and push stub image
+        run: |
+          IMAGE="${{ secrets.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/daikin/${{ env.STUB_SERVICE_NAME }}"
+          TAG="${IMAGE}:${{ github.sha }}"
+          LATEST="${IMAGE}:latest"
+
+          docker build \
+            --tag "$TAG" \
+            --tag "$LATEST" \
+            -f oauth-stub/Dockerfile \
+            oauth-stub
+
+          docker push "$TAG"
+          docker push "$LATEST"
+          echo "STUB_IMAGE_TAG=$TAG" >> "$GITHUB_ENV"
+
+      - name: Deploy stub to Cloud Run (public)
+        run: |
+          gcloud run deploy ${{ env.STUB_SERVICE_NAME }} \
+            --image="${STUB_IMAGE_TAG}" \
+            --region="${{ secrets.GCP_REGION }}" \
+            --platform=managed \
+            --allow-unauthenticated \
+            --project="${{ secrets.GCP_PROJECT_ID }}"
+
+      - name: Print redirect URI for Daikin portal
+        run: |
+          URL=$(gcloud run services describe ${{ env.STUB_SERVICE_NAME }} \
+            --region="${{ secrets.GCP_REGION }}" \
+            --format="value(status.url)" \
+            --project="${{ secrets.GCP_PROJECT_ID }}")
+          echo "SERVICE_URL=${URL}" >> "$GITHUB_ENV"
+          echo "### OAuth stub" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Register this **redirect URI** in the Daikin developer app:" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "\`${URL}/oauth/callback\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Health: \`${URL}/healthz\`" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Smoke test (unauthenticated)
+        run: |
+          curl -sfS "${SERVICE_URL}/healthz" | jq .
