@@ -9,6 +9,7 @@
  *   5. Register SIGTERM handler for graceful Cloud Run shutdown.
  */
 
+import 'dotenv/config';
 import express from 'express';
 import { config } from './config';
 import logger from './logger';

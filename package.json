@@ -9,7 +9,9 @@
     "dev": "nodemon --exec ts-node src/server.ts",
     "test": "jest",
     "test:coverage": "jest --coverage",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "daikin:oauth-url": "node setup/oauth-onboarding/onecta-oauth-setup.js authorize-url",
+    "daikin:oauth-exchange": "node setup/oauth-onboarding/onecta-oauth-setup.js exchange"
   },
   "engines": {
     "node": ">=20"
@@ -17,6 +19,7 @@
   "dependencies": {
     "axios": "^1.6.8",
     "axios-retry": "^4.1.0",
+    "dotenv": "^17.4.1",
     "express": "^4.18.3",
     "google-auth-library": "^9.6.3",
     "pino": "^8.19.0",
@@ -36,8 +39,15 @@
   "jest": {
     "preset": "ts-jest",
     "testEnvironment": "node",
-    "roots": ["<rootDir>/tests"],
-    "testMatch": ["**/*.test.ts"],
-    "collectCoverageFrom": ["src/**/*.ts", "!src/server.ts"]
+    "roots": [
+      "<rootDir>/tests"
+    ],
+    "testMatch": [
+      "**/*.test.ts"
+    ],
+    "collectCoverageFrom": [
+      "src/**/*.ts",
+      "!src/server.ts"
+    ]
   }
 }
