@@ -1,9 +1,10 @@
 # Daikin Humidity Control
 
 A production-ready TypeScript/Node.js 20 service that controls Daikin AC units
-via the [Daikin Onecta cloud API](https://developer.onecta.daikineurope.com/)
+via the [Daikin Onecta cloud API](https://developer.cloud.daikineurope.com/)
 with **no local hardware**. Deployed on Google Cloud Run, triggered by Cloud
-Scheduler, secrets stored in Secret Manager.
+Scheduler, with static credentials in Secret Manager and the rotating production
+refresh token in Firestore.
 
 ---
 
@@ -26,7 +27,9 @@ Cloud Run  (private — no public access)
   ├─ IdempotencyGuard — in-memory dedup (10-min window per task)
   └─ requireSchedulerAuth — OIDC JWT middleware (google-auth-library)
 
-Secrets:  Secret Manager → env vars injected at Cloud Run deploy time
+Secrets/state:
+├─ Secret Manager → static app credentials (`DAIKIN_CLIENT_ID`, `DAIKIN_CLIENT_SECRET`)
+└─ Firestore     → latest rotating refresh token in production
 ```
 
 ### Quota budget (Daikin private dev app — 200 calls/day)
@@ -70,7 +73,7 @@ Set `MODE_STRATEGY=humidity`.
 
 ---
 
-## Environment variables
+## Runtime environment variables
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
@@ -78,9 +81,13 @@ Set `MODE_STRATEGY=humidity`.
 | `NODE_ENV` | no | `development` | Set to `production` in Cloud Run |
 | `DAIKIN_CLIENT_ID` | **yes** | — | Onecta OAuth client ID |
 | `DAIKIN_CLIENT_SECRET` | **yes** | — | Onecta OAuth client secret |
-| `DAIKIN_REFRESH_TOKEN` | **yes** | — | Long-lived OAuth refresh token |
+| `DAIKIN_REFRESH_TOKEN` | no | — | Optional bootstrap refresh token used only when the token store is empty |
 | `DAIKIN_BASE_URL` | no | `https://api.onecta.daikineurope.com` | API base URL |
 | `DAIKIN_AUTH_URL` | no | `https://idp.onecta.daikineurope.com/v1/oidc/token` | Token endpoint |
+| `DAIKIN_TOKEN_STORE` | no | `local-file` in development, `firestore` in production | Where the latest rotating refresh token is stored |
+| `DAIKIN_TOKEN_FILE_PATH` | no | OS-specific app-data path | Local development token file path |
+| `DAIKIN_FIRESTORE_COLLECTION` | no | `oauth_tokens` | Firestore collection for the latest rotating refresh token |
+| `DAIKIN_FIRESTORE_DOCUMENT` | no | `daikin_onecta` | Firestore document id for the latest rotating refresh token |
 | `DAIKIN_DEVICE_IDS_JSON` | **yes** | — | JSON array of device UUIDs to control |
 | `DAIKIN_HUMIDITY_LEADER_IDS_JSON` | **yes** | — | JSON array of device UUIDs to read humidity from |
 | `DRY_DURATION_MINUTES` | no | `120` | Informational — used to space Scheduler jobs |
@@ -91,6 +98,22 @@ Set `MODE_STRATEGY=humidity`.
 | `LOG_LEVEL` | no | `info` | `trace` `debug` `info` `warn` `error` `fatal` |
 | `EXPECTED_AUDIENCE` | **yes** | — | Cloud Run service URL (OIDC audience check) |
 
+### OAuth helper variables
+
+These are used by the local onboarding scripts, not by the main runtime server:
+
+| Variable | Required | Default | Description |
+|---|---|---|---|
+| `DAIKIN_REDIRECT_URI` | **yes** for OAuth bootstrap | — | Redirect URI registered in the developer portal |
+| `DAIKIN_AUTHORIZE_URL` | no | `https://idp.onecta.daikineurope.com/v1/oidc/authorize` | Optional authorize endpoint override for the helper |
+| `DAIKIN_AUTH_CODE` | no | — | Optional environment alternative to passing the one-time code as a CLI argument |
+
+### Test-only variables
+
+| Variable | Required | Default | Description |
+|---|---|---|---|
+| `DAIKIN_INTEGRATION_TEST` | no | — | Enables live Onecta integration tests when set to `1` |
+
 ---
 
 ## Local development
@@ -98,15 +121,19 @@ Set `MODE_STRATEGY=humidity`.
 ```bash
 # 1. Copy env file and fill in values
 cp .env.example .env
-# Edit .env — set DAIKIN_* credentials and device IDs
+# Edit .env — set static DAIKIN_* credentials, token-store settings, and real device IDs
 
 # 2. Install dependencies
 npm install
 
-# 3. Run with hot-reload (auth check is skipped in development)
+# 3. Bootstrap the local token store once (browser login + one-time code exchange)
+npm run daikin:oauth-url
+npm run daikin:oauth-exchange -- '<code>'
+
+# 4. Run with hot-reload (auth check is skipped in development)
 npm run dev
 
-# 4. Test endpoints
+# 5. Test endpoints
 curl http://localhost:8080/healthz
 curl -X POST http://localhost:8080/tasks/dry-stop
 curl -X POST http://localhost:8080/tasks/check-humidity
@@ -117,14 +144,23 @@ curl -X POST http://localhost:8080/tasks/check-humidity
 ## Tests
 
 ```bash
-npm test              # run all tests
+npm test              # run all tests (offline unit tests only)
 npm run test:coverage # with coverage report
+npm run test:onnecta  # live Daikin Onecta: list devices, read state, reversible setpoint PATCH (needs valid .env)
+npm run daikin:live-smoke   # same flow as a CLI script (optional: device id, --raw)
 ```
 
-Three test suites:
+`test:onnecta` sets `DAIKIN_INTEGRATION_TEST=1` via `cross-env`. If the token store is empty or expired, run the browser OAuth flow and `npm run daikin:oauth-exchange` once to bootstrap it again.
+
+Local development uses the configured local token file as the source of truth for the rotating refresh token. The repo `.env` file is bootstrap/static config only.
+
+Unit test suites (default `npm test`):
 - `tests/hysteresis.test.ts` — HumidityStateMachine transitions
 - `tests/idempotency.test.ts` — IdempotencyGuard allow/block/reset
 - `tests/config.test.ts` — Zod schema validation and defaults
+
+Live API (separate Jest config, `npm run test:onnecta`):
+- `tests/daikin-onecta.integration.test.ts` — real Onecta list / read / write
 
 ---
 
@@ -182,9 +218,10 @@ The script:
 2. Creates an Artifact Registry Docker repository (`daikin`)
 3. Creates a deploy service account (`daikin-deploy-sa`) with the minimum roles
 4. Creates a scheduler service account (`daikin-scheduler-sa`)
-5. Prompts for Daikin secret values and stores them in Secret Manager
-6. Sets up Workload Identity Federation (GitHub → GCP, no JSON key)
-7. Prints the exact GitHub secrets you need to add
+5. Prompts for static Daikin app credentials and stores them in Secret Manager
+6. Grants the Cloud Run runtime service account Secret Manager read access and Firestore write access
+7. Sets up Workload Identity Federation (GitHub → GCP, no JSON key)
+8. Prints the exact GitHub secrets you need to add
 
 ### GitHub secrets to configure
 
@@ -205,8 +242,10 @@ After running bootstrap.sh, go to **Settings → Secrets and variables → Actio
 | `DRY_DURATION_MINUTES` *(optional)* | `120` |
 | `LOG_LEVEL` *(optional)* | `info` |
 
-> The Daikin credentials (`DAIKIN_CLIENT_ID`, `DAIKIN_CLIENT_SECRET`, `DAIKIN_REFRESH_TOKEN`) live
-> only in Secret Manager. Cloud Run reads them at runtime — they are never in GitHub.
+> The static Daikin app credentials (`DAIKIN_CLIENT_ID`, `DAIKIN_CLIENT_SECRET`)
+> live in Secret Manager. The latest rotating refresh token lives in Firestore
+> so Cloud Run can update it after each refresh. The GitHub Actions pipeline does
+> not own or rotate the refresh token.
 
 ### Deploy
 
@@ -250,9 +289,12 @@ export SCHEDULER_SA=daikin-scheduler-sa
 gcloud services enable \
   run.googleapis.com \
   cloudscheduler.googleapis.com \
+  firestore.googleapis.com \
   secretmanager.googleapis.com \
   iam.googleapis.com \
+  iamcredentials.googleapis.com \
   cloudbuild.googleapis.com \
+  artifactregistry.googleapis.com \
   --project=$PROJECT_ID
 ```
 
@@ -264,13 +306,12 @@ gcloud iam service-accounts create $SCHEDULER_SA \
   --project=$PROJECT_ID
 ```
 
-### 3 — Store secrets in Secret Manager
+### 3 — Store static app credentials in Secret Manager
 
 ```bash
 # Store each secret interactively (paste value, then Ctrl-D)
 printf '%s' 'YOUR_CLIENT_ID'      | gcloud secrets create DAIKIN_CLIENT_ID      --data-file=- --project=$PROJECT_ID
 printf '%s' 'YOUR_CLIENT_SECRET'  | gcloud secrets create DAIKIN_CLIENT_SECRET  --data-file=- --project=$PROJECT_ID
-printf '%s' 'YOUR_REFRESH_TOKEN'  | gcloud secrets create DAIKIN_REFRESH_TOKEN  --data-file=- --project=$PROJECT_ID
 ```
 
 Grant the Cloud Run runtime service account access to read them
@@ -280,13 +321,24 @@ Grant the Cloud Run runtime service account access to read them
 export PROJECT_NUMBER=$(gcloud projects describe $PROJECT_ID --format='value(projectNumber)')
 export RUN_SA="${PROJECT_NUMBER}-compute@developer.gserviceaccount.com"
 
-for SECRET in DAIKIN_CLIENT_ID DAIKIN_CLIENT_SECRET DAIKIN_REFRESH_TOKEN; do
+for SECRET in DAIKIN_CLIENT_ID DAIKIN_CLIENT_SECRET; do
   gcloud secrets add-iam-policy-binding $SECRET \
     --member="serviceAccount:${RUN_SA}" \
     --role="roles/secretmanager.secretAccessor" \
     --project=$PROJECT_ID
 done
 ```
+
+Grant the Cloud Run runtime service account Firestore access:
+
+```bash
+gcloud projects add-iam-policy-binding $PROJECT_ID \
+  --member="serviceAccount:${RUN_SA}" \
+  --role="roles/datastore.user"
+```
+
+If Firestore has not been initialized in the project yet, create a Firestore
+database once in the Google Cloud console before bootstrapping the first token.
 
 ### 4 — Deploy to Cloud Run
 
@@ -303,10 +355,12 @@ HEAT_TARGET_TEMP_C=16,\
 HUMIDITY_HIGH_THRESHOLD=70,\
 HUMIDITY_LOW_THRESHOLD=60,\
 MODE_STRATEGY=timer,\
-LOG_LEVEL=info" \
+LOG_LEVEL=info,\
+DAIKIN_TOKEN_STORE=firestore,\
+DAIKIN_FIRESTORE_COLLECTION=oauth_tokens,\
+DAIKIN_FIRESTORE_DOCUMENT=daikin_onecta" \
   --set-secrets="DAIKIN_CLIENT_ID=DAIKIN_CLIENT_ID:latest,\
-DAIKIN_CLIENT_SECRET=DAIKIN_CLIENT_SECRET:latest,\
-DAIKIN_REFRESH_TOKEN=DAIKIN_REFRESH_TOKEN:latest" \
+DAIKIN_CLIENT_SECRET=DAIKIN_CLIENT_SECRET:latest" \
   --project=$PROJECT_ID
 ```
 
@@ -322,7 +376,22 @@ gcloud run services update $SERVICE_NAME \
   --project=$PROJECT_ID
 ```
 
-### 5 — Grant Scheduler the Cloud Run Invoker role
+### 5 — Bootstrap the Firestore token store once
+
+Run the OAuth exchange one time with the same Firestore settings the service will use:
+
+```bash
+export DAIKIN_TOKEN_STORE=firestore
+export DAIKIN_FIRESTORE_COLLECTION=oauth_tokens
+export DAIKIN_FIRESTORE_DOCUMENT=daikin_onecta
+
+npm run daikin:oauth-url
+npm run daikin:oauth-exchange -- '<code>'
+```
+
+This stores the first refresh token in Firestore. After that, Cloud Run keeps it up to date automatically.
+
+### 6 — Grant Scheduler the Cloud Run Invoker role
 
 ```bash
 gcloud run services add-iam-policy-binding $SERVICE_NAME \
@@ -332,7 +401,7 @@ gcloud run services add-iam-policy-binding $SERVICE_NAME \
   --project=$PROJECT_ID
 ```
 
-### 6 — Create Cloud Scheduler jobs
+### 7 — Create Cloud Scheduler jobs
 
 #### Option A — Timer-only
 
@@ -467,19 +536,25 @@ in clearly-marked `// ADAPTER NOTE` comments in `src/daikin.ts`. Search for
 
 ## Obtaining a Daikin refresh token
 
-The Onecta API uses an Authorization Code OAuth2 flow for initial setup. Since
-this service runs unattended, the one-time flow must be completed locally:
+The Onecta API uses an Authorization Code + OIDC flow for initial setup. The
+user completes the browser login once, then the service stores the live refresh
+token in a writable token store so future access-token refreshes are automatic.
 
-1. Register a developer app at <https://developer.onecta.daikineurope.com/>.
+1. Register a developer app at <https://developer.cloud.daikineurope.com/>.
 2. Put `DAIKIN_CLIENT_ID`, `DAIKIN_CLIENT_SECRET`, and `DAIKIN_REDIRECT_URI` in `.env`
    (`DAIKIN_REDIRECT_URI` must match the redirect URI registered in the portal exactly).
-3. Print the authorize URL, open it in a browser, then exchange the returned `code`:
+3. Choose your token store:
+   - Local development: `DAIKIN_TOKEN_STORE=local-file` and optionally `DAIKIN_TOKEN_FILE_PATH`
+   - Cloud Run production: `DAIKIN_TOKEN_STORE=firestore`
+4. Print the authorize URL, open it in a browser, then exchange the returned `code`:
    ```bash
    npm run daikin:oauth-url
    npm run daikin:oauth-exchange -- '<paste-code-from-browser>'
    ```
    (Script: `setup/oauth-onboarding/onecta-oauth-setup.js` — loads `.env` from the repo root.)
-4. Copy the printed `refresh_token` into `DAIKIN_REFRESH_TOKEN` in `.env` and in Secret Manager for Cloud Run.
+5. The exchange script stores the returned `refresh_token` into the configured token store.
+   The service then refreshes access tokens automatically and persists any rotated
+   refresh token back into that same store.
 
 **Manual alternative** (same result as the script):
 
@@ -503,8 +578,11 @@ this service runs unattended, the one-time flow must be completed locally:
      -d 'redirect_uri=YOUR_REDIRECT_URI'
    ```
 
-4. Store the returned `refresh_token` in `.env` / Secret Manager as `DAIKIN_REFRESH_TOKEN`
-   (same as step 4 above). The service uses it to obtain short-lived access tokens automatically.
+4. Persist the returned `refresh_token` into the configured token store
+   (local file in development, Firestore in production). Do not treat the repo
+   `.env` file as the long-term source of truth for a rotating refresh token.
 
-> **Note**: Refresh tokens may have a long expiry or be perpetual for private
-> developer apps. Check the Daikin developer portal terms for your app type.
+> **Note**: The Onecta docs describe one-hour access tokens, opaque refresh
+> tokens, a maximum authorization-session lifetime of one year, and possible
+> refresh-token rotation. The latest refresh token must therefore be stored in a
+> writable durable store, not only in `.env`.
