@@ -18,6 +18,7 @@ const fs = require('fs');
 const path = require('path');
 const https = require('https');
 const { URL, URLSearchParams } = require('url');
+const { describeTokenStore, getTokenStoreConfig, saveRefreshToken } = require('./token-store');
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
 const ENV_PATH = path.join(REPO_ROOT, '.env');
@@ -69,6 +70,7 @@ function requireEnv(name) {
 function printAuthorizeUrl() {
   const clientId = requireEnv('DAIKIN_CLIENT_ID');
   const redirectUri = requireEnv('DAIKIN_REDIRECT_URI');
+  const tokenStoreDescription = describeTokenStore(getTokenStoreConfig());
   const authorizeBase =
     process.env.DAIKIN_AUTHORIZE_URL?.trim() || DEFAULT_AUTHORIZE_BASE;
 
@@ -80,10 +82,12 @@ function printAuthorizeUrl() {
 
   console.log('\nOpen this URL in a browser (log in and approve):\n');
   console.log(u.toString());
-  console.log('\nAfter redirect, copy the "code" query parameter and run:\n');
-  console.log(
-    `  node setup/oauth-onboarding/onecta-oauth-setup.js exchange '<code>'\n`,
-  );
+  console.log('\nAfter redirect, copy the "code" query value only (not "code=") and run:\n');
+  console.log(`  npm run daikin:oauth-exchange -- '<code>'`);
+  console.log('    (from workspace root: tihany-daikin — uses package.json script)\n');
+  console.log(`The resulting refresh_token will be persisted to: ${tokenStoreDescription}\n`);
+  console.log('  Or this exact path (works from any directory):\n');
+  console.log(`  node "${__filename}" exchange '<code>'\n`);
 }
 
 /**
@@ -158,10 +162,10 @@ async function exchangeCode(code) {
   console.log('');
 
   if (json.refresh_token) {
+    const tokenStoreDescription = await saveRefreshToken(json.refresh_token, 'oauth-code-exchange');
     console.log('---');
-    console.log('Set this in .env and in Secret Manager (DAIKIN_REFRESH_TOKEN):\n');
-    console.log(json.refresh_token);
-    console.log('');
+    console.log(`Saved refresh_token to ${tokenStoreDescription}.`);
+    console.log('That token store is now the source of truth for future refreshes.\n');
   } else {
     console.warn('No refresh_token in response — check scope and portal app settings.');
   }
@@ -194,12 +198,15 @@ function main() {
   }
 
   console.error(`Usage:
-  node setup/oauth-onboarding/onecta-oauth-setup.js authorize-url
-  node setup/oauth-onboarding/onecta-oauth-setup.js exchange <code>
+  node "${__filename}" authorize-url
+  node "${__filename}" exchange <code>
 
 Optional .env (repo root): DAIKIN_CLIENT_ID, DAIKIN_CLIENT_SECRET, DAIKIN_REDIRECT_URI
 Optional: DAIKIN_AUTH_URL (default ${DEFAULT_TOKEN_URL})
 Optional: DAIKIN_AUTHORIZE_URL (default ${DEFAULT_AUTHORIZE_BASE})
+Optional: DAIKIN_TOKEN_STORE, DAIKIN_TOKEN_FILE_PATH, DAIKIN_FIRESTORE_COLLECTION, DAIKIN_FIRESTORE_DOCUMENT
+
+DAIKIN_REFRESH_TOKEN is bootstrap-only. The live rotating refresh token is stored in the configured token store.
 `);
   process.exit(1);
 }

@@ -22,6 +22,8 @@ function setEnv(overrides: Record<string, string | undefined>): void {
   for (const key of [
     ...Object.keys(VALID_ENV),
     'PORT', 'NODE_ENV', 'DAIKIN_BASE_URL', 'DAIKIN_AUTH_URL',
+    'DAIKIN_TOKEN_STORE', 'DAIKIN_TOKEN_FILE_PATH',
+    'DAIKIN_FIRESTORE_COLLECTION', 'DAIKIN_FIRESTORE_DOCUMENT',
     'DRY_DURATION_MINUTES', 'HEAT_TARGET_TEMP_C',
     'HUMIDITY_HIGH_THRESHOLD', 'HUMIDITY_LOW_THRESHOLD',
     'MODE_STRATEGY', 'LOG_LEVEL',
@@ -76,6 +78,12 @@ describe('config — valid environment', () => {
     expect(config.heatTargetTempC).toBe(16);
   });
 
+  it('defaults to local-file token storage in development', async () => {
+    const { config } = await loadConfig();
+    expect(config.daikin.tokenStore.backend).toBe('local-file');
+    expect(config.daikin.bootstrapRefreshToken).toBe('test-refresh-token');
+  });
+
   it('uses default humidity thresholds 70/60', async () => {
     const { config } = await loadConfig();
     expect(config.humidityHighThreshold).toBe(70);
@@ -93,6 +101,25 @@ describe('config — valid environment', () => {
     const { config } = await loadConfig();
     expect(config.modeStrategy).toBe('humidity');
   });
+
+  it('defaults to firestore token storage in production', async () => {
+    setEnv({ NODE_ENV: 'production' });
+    const { config } = await loadConfig();
+    expect(config.daikin.tokenStore.backend).toBe('firestore');
+  });
+
+  it('respects custom token store settings', async () => {
+    setEnv({
+      DAIKIN_TOKEN_STORE: 'local-file',
+      DAIKIN_TOKEN_FILE_PATH: '/tmp/daikin-refresh.json',
+      DAIKIN_FIRESTORE_COLLECTION: 'custom_collection',
+      DAIKIN_FIRESTORE_DOCUMENT: 'custom_document',
+    });
+    const { config } = await loadConfig();
+    expect(config.daikin.tokenStore.localFilePath).toBe('/tmp/daikin-refresh.json');
+    expect(config.daikin.tokenStore.firestoreCollection).toBe('custom_collection');
+    expect(config.daikin.tokenStore.firestoreDocument).toBe('custom_document');
+  });
 });
 
 // ── Missing required fields ───────────────────────────────────────────────────
@@ -108,9 +135,10 @@ describe('config — missing required fields', () => {
     await expect(loadConfig()).rejects.toThrow(/DAIKIN_CLIENT_SECRET/);
   });
 
-  it('throws when DAIKIN_REFRESH_TOKEN is missing', async () => {
+  it('does not require DAIKIN_REFRESH_TOKEN when another token store will provide it', async () => {
     setEnv({ DAIKIN_REFRESH_TOKEN: undefined });
-    await expect(loadConfig()).rejects.toThrow(/DAIKIN_REFRESH_TOKEN/);
+    const { config } = await loadConfig();
+    expect(config.daikin.bootstrapRefreshToken).toBeUndefined();
   });
 
   it('throws when EXPECTED_AUDIENCE is missing', async () => {

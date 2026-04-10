@@ -18,15 +18,24 @@ import { HumidityStateMachine } from './humidity';
 import { IdempotencyGuard } from './idempotency';
 import { requireSchedulerAuth } from './scheduler-auth';
 import { createRouter } from './routes';
+import { createRefreshTokenStore } from './token-store';
 
 // ── Singletons ────────────────────────────────────────────────────────────────
+
+const refreshTokenStore = createRefreshTokenStore({
+  backend: config.daikin.tokenStore.backend,
+  bootstrapRefreshToken: config.daikin.bootstrapRefreshToken,
+  localFilePath: config.daikin.tokenStore.localFilePath,
+  firestoreCollection: config.daikin.tokenStore.firestoreCollection,
+  firestoreDocument: config.daikin.tokenStore.firestoreDocument,
+});
 
 const daikinClient = new DaikinClient(
   config.daikin.clientId,
   config.daikin.clientSecret,
-  config.daikin.refreshToken,
   config.daikin.baseUrl,
   config.daikin.authUrl,
+  refreshTokenStore,
 );
 
 const humidityFsm = new HumidityStateMachine();
@@ -62,6 +71,7 @@ const server = app.listen(config.port, () => {
       modeStrategy: config.modeStrategy,
       deviceCount: config.daikin.deviceIds.length,
       humidityLeaderCount: config.daikin.humidityLeaderIds.length,
+      tokenStore: refreshTokenStore.describe(),
     },
     'Daikin humidity control service started',
   );

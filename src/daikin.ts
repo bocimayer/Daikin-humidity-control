@@ -7,12 +7,13 @@
  * API docs or a working developer account.
  *
  * Reference docs (private developer portal):
- *   https://developer.onecta.daikineurope.com/
+ *   https://developer.cloud.daikineurope.com/
  */
 
 import axios, { AxiosInstance, AxiosError } from 'axios';
 import axiosRetry from 'axios-retry';
 import logger from './logger';
+import { RefreshTokenStore } from './token-store';
 
 // ─── Public types ────────────────────────────────────────────────────────────
 
@@ -36,6 +37,8 @@ interface TokenResponse {
   /** Seconds until expiry. */
   expires_in: number;
   token_type: string;
+  /** Some IdPs rotate refresh tokens on each use — must replace stored value. */
+  refresh_token?: string;
 }
 
 interface CharacteristicValue {
@@ -46,8 +49,11 @@ interface CharacteristicValue {
 }
 
 interface ManagementPoint {
-  /** e.g. "climateControl", "gateway", "sensoryData" */
-  managementPointType: string;
+  /** Live Onecta payloads use `embeddedId` (see daikin-controller-cloud). */
+  embeddedId?: string;
+  /** Some responses may use this instead of `embeddedId`. */
+  managementPointType?: string;
+  /** Older / alternate shape: characteristics nested under a map. */
   characteristics?: Record<string, CharacteristicValue>;
 }
 
@@ -65,16 +71,18 @@ export class DaikinClient {
   private accessToken: string | null = null;
   /** Unix epoch ms when the current token expires. */
   private tokenExpiresAt = 0;
+  private currentRefreshToken: string;
   /** Minimum remaining token lifetime before we proactively refresh (ms). */
   private readonly tokenRefreshMarginMs = 5 * 60 * 1000;
 
   constructor(
     private readonly clientId: string,
     private readonly clientSecret: string,
-    private readonly refreshToken: string,
     private readonly baseUrl: string,
     private readonly authUrl: string,
+    private readonly refreshTokenStore: RefreshTokenStore,
   ) {
+    this.currentRefreshToken = '';
     this.authHttp = axios.create({ timeout: 15_000 });
 
     this.http = axios.create({
@@ -126,11 +134,19 @@ export class DaikinClient {
 
     logger.debug({ authUrl: this.authUrl }, 'Refreshing Daikin access token');
 
+    if (!this.currentRefreshToken) {
+      this.currentRefreshToken = await this.refreshTokenStore.getRefreshToken();
+      logger.info(
+        { tokenStore: this.refreshTokenStore.describe() },
+        'Loaded Daikin refresh token from token store',
+      );
+    }
+
     const params = new URLSearchParams({
       grant_type: 'refresh_token',
       client_id: this.clientId,
       client_secret: this.clientSecret,
-      refresh_token: this.refreshToken,
+      refresh_token: this.currentRefreshToken,
     });
 
     try {
@@ -140,13 +156,30 @@ export class DaikinClient {
 
       this.accessToken = response.data.access_token;
       this.tokenExpiresAt = now + response.data.expires_in * 1000;
+      if (response.data.refresh_token) {
+        this.currentRefreshToken = response.data.refresh_token;
+        await this.refreshTokenStore.saveRefreshToken(response.data.refresh_token, 'token-refresh');
+        logger.warn(
+          { tokenStore: this.refreshTokenStore.describe() },
+          'Onecta returned a new refresh_token (rotation). Persisted the latest refresh token to the configured token store.',
+        );
+      }
       logger.info(
         { expiresInSeconds: response.data.expires_in },
         'Daikin access token refreshed successfully',
       );
       return this.accessToken;
     } catch (err) {
-      logger.error({ err }, 'Failed to refresh Daikin access token');
+      const ax = err as AxiosError<{ error?: string; error_description?: string }>;
+      logger.error(
+        {
+          message: ax.message,
+          status: ax.response?.status,
+          oauthError: ax.response?.data?.error,
+          oauthDescription: ax.response?.data?.error_description,
+        },
+        'Failed to refresh Daikin access token',
+      );
       throw err;
     }
   }
@@ -161,8 +194,22 @@ export class DaikinClient {
    * The current implementation assumes the full list is returned in one response.
    */
   async getDevices(): Promise<RawDevice[]> {
-    const response = await this.http.get<RawDevice[]>('/v1/gateway-devices');
-    return response.data;
+    const response = await this.http.get<unknown>('/v1/gateway-devices');
+    const data = response.data;
+    if (Array.isArray(data)) {
+      return data as RawDevice[];
+    }
+    if (data && typeof data === 'object') {
+      const o = data as Record<string, unknown>;
+      for (const key of ['data', 'gatewayDevices', 'devices', 'items']) {
+        const v = o[key];
+        if (Array.isArray(v)) {
+          return v as RawDevice[];
+        }
+      }
+    }
+    logger.warn({ dataType: typeof data }, 'Unexpected gateway-devices response shape');
+    return [];
   }
 
   // ─── Device state ──────────────────────────────────────────────────────────
@@ -183,13 +230,22 @@ export class DaikinClient {
    *   value.operationModes.heating.setpoints.roomTemperature.value
    */
   async getDeviceState(deviceId: string): Promise<DaikinDeviceState> {
-    const response = await this.http.get<RawDevice>(`/v1/gateway-devices/${deviceId}`);
-    const device = response.data;
+    const device = await this.getGatewayDeviceRaw(deviceId);
     return this.parseDeviceState(device);
   }
 
+  /**
+   * Raw GET /v1/gateway-devices/{id} payload (for debugging / adapter work).
+   */
+  async getGatewayDeviceRaw(deviceId: string): Promise<RawDevice> {
+    const response = await this.http.get<RawDevice>(`/v1/gateway-devices/${deviceId}`);
+    return response.data;
+  }
+
   private parseDeviceState(device: RawDevice): DaikinDeviceState {
-    const climateControl = this.findManagementPoint(device, 'climateControl');
+    const climateControl =
+      this.findManagementPoint(device, 'climateControl') ??
+      this.findManagementPoint(device, 'climateControlInfo');
     const sensoryData = this.findManagementPoint(device, 'sensoryData');
 
     const operationMode = this.extractCharacteristicValue<OperationMode>(
@@ -221,8 +277,9 @@ export class DaikinClient {
    * (vs "climateControlInfo").
    */
   async setOperationMode(deviceId: string, mode: OperationMode): Promise<void> {
-    const path = this.characteristicPath(deviceId, 'climateControl', 'operationMode');
-    logger.debug({ deviceId, mode, path }, 'Setting operation mode');
+    const mpSlug = await this.getClimateManagementPointSlug(deviceId);
+    const path = this.characteristicPath(deviceId, mpSlug, 'operationMode');
+    logger.debug({ deviceId, mode, path, mpSlug }, 'Setting operation mode');
     await this.http.patch(path, { value: mode });
   }
 
@@ -246,8 +303,9 @@ export class DaikinClient {
    * Some devices may use a simpler flat body: { "value": <number> }
    */
   async setTemperature(deviceId: string, tempC: number): Promise<void> {
-    const path = this.characteristicPath(deviceId, 'climateControl', 'temperatureControl');
-    logger.debug({ deviceId, tempC, path }, 'Setting temperature setpoint');
+    const mpSlug = await this.getClimateManagementPointSlug(deviceId);
+    const path = this.characteristicPath(deviceId, mpSlug, 'temperatureControl');
+    logger.debug({ deviceId, tempC, path, mpSlug }, 'Setting temperature setpoint');
     await this.http.patch(path, {
       value: {
         operationModes: {
@@ -275,18 +333,56 @@ export class DaikinClient {
     return `/v1/gateway-devices/${deviceId}/management-points/${managementPointType}/characteristics/${characteristicType}`;
   }
 
+  /**
+   * PATCH URLs must use the device’s real management-point id (`embeddedId`),
+   * e.g. `climateControl` or `climateControlInfo`.
+   */
+  private async getClimateManagementPointSlug(deviceId: string): Promise<string> {
+    const device = await this.getGatewayDeviceRaw(deviceId);
+    const mp =
+      this.findManagementPoint(device, 'climateControl') ??
+      this.findManagementPoint(device, 'climateControlInfo');
+    if (!mp) {
+      logger.warn({ deviceId }, 'No climate management point; using climateControl');
+      return 'climateControl';
+    }
+    return String(mp.embeddedId ?? mp.managementPointType ?? 'climateControl');
+  }
+
   private findManagementPoint(
     device: RawDevice,
     type: string,
   ): ManagementPoint | null {
-    return device.managementPoints?.find((mp) => mp.managementPointType === type) ?? null;
+    return (
+      device.managementPoints?.find(
+        (mp) => mp.managementPointType === type || mp.embeddedId === type,
+      ) ?? null
+    );
+  }
+
+  /**
+   * Onecta returns datapoints either under `characteristics.name` or as direct
+   * fields on the management point object (`operationMode`, `temperatureControl`, …).
+   */
+  private getCharacteristic(
+    mp: ManagementPoint | null,
+    key: string,
+  ): CharacteristicValue | undefined {
+    if (!mp) return undefined;
+    const nested = mp.characteristics?.[key];
+    if (nested) return nested;
+    const direct = (mp as Record<string, unknown>)[key];
+    if (direct && typeof direct === 'object' && direct !== null && 'value' in direct) {
+      return direct as CharacteristicValue;
+    }
+    return undefined;
   }
 
   private extractCharacteristicValue<T>(
     mp: ManagementPoint | null,
     key: string,
   ): T | null {
-    const char = mp?.characteristics?.[key];
+    const char = this.getCharacteristic(mp, key);
     if (char === undefined) return null;
     return (char.value as T) ?? null;
   }
@@ -296,16 +392,16 @@ export class DaikinClient {
    * Adjust the key path if your device model reports humidity differently.
    */
   private extractHumidity(sensoryData: ManagementPoint | null): number | null {
-    if (!sensoryData?.characteristics) return null;
+    if (!sensoryData) return null;
 
     // Path 1: sensoryData → sensoryData characteristic → indoorHumidity.value
-    const sd = sensoryData.characteristics['sensoryData'];
+    const sd = this.getCharacteristic(sensoryData, 'sensoryData');
     if (sd?.value?.indoorHumidity?.value !== undefined) {
       return sd.value.indoorHumidity.value as number;
     }
 
     // Path 2: direct "indoorHumidity" characteristic
-    const ih = sensoryData.characteristics['indoorHumidity'];
+    const ih = this.getCharacteristic(sensoryData, 'indoorHumidity');
     if (ih?.value !== undefined) {
       return ih.value as number;
     }
@@ -318,7 +414,7 @@ export class DaikinClient {
    * Adjust the nested path based on live API output.
    */
   private extractSetpointTemp(climateControl: ManagementPoint | null): number | null {
-    const tc = climateControl?.characteristics?.['temperatureControl'];
+    const tc = this.getCharacteristic(climateControl, 'temperatureControl');
     if (!tc) return null;
     // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
     return tc.value?.operationModes?.heating?.setpoints?.roomTemperature?.value ?? null;
@@ -329,9 +425,8 @@ export class DaikinClient {
    * Adjust to match the actual field name in the API response.
    */
   private extractDeviceName(device: RawDevice): string {
-    // Some devices expose the name as a characteristic on the gateway management point.
     const gateway = this.findManagementPoint(device, 'gateway');
-    const nameCh = gateway?.characteristics?.['name'];
+    const nameCh = this.getCharacteristic(gateway, 'name');
     if (nameCh?.value) return String(nameCh.value);
 
     // Fallback to device ID.
