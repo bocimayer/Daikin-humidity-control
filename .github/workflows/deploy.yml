@@ -35,8 +35,6 @@ env:
   #   LOG_LEVEL                         default: info
 
   SERVICE_NAME: daikin-humidity-control
-  IMAGE_NAME: ${{ vars.GCP_REGION || 'europe-central2' }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/daikin/${{ github.event.repository.name }}
-
 jobs:
   deploy:
     name: Build & Deploy
@@ -106,6 +104,9 @@ jobs:
         run: |
           # Build the --set-env-vars string from secrets/defaults.
           ENV_VARS="NODE_ENV=production"
+          ENV_VARS="${ENV_VARS},DAIKIN_TOKEN_STORE=firestore"
+          ENV_VARS="${ENV_VARS},DAIKIN_FIRESTORE_COLLECTION=oauth_tokens"
+          ENV_VARS="${ENV_VARS},DAIKIN_FIRESTORE_DOCUMENT=daikin_onecta"
           ENV_VARS="${ENV_VARS},DAIKIN_DEVICE_IDS_JSON=${{ secrets.DAIKIN_DEVICE_IDS_JSON }}"
           ENV_VARS="${ENV_VARS},DAIKIN_HUMIDITY_LEADER_IDS_JSON=${{ secrets.DAIKIN_HUMIDITY_LEADER_IDS_JSON }}"
           ENV_VARS="${ENV_VARS},HEAT_TARGET_TEMP_C=${{ secrets.HEAT_TARGET_TEMP_C || '16' }}"
@@ -121,7 +122,7 @@ jobs:
             --platform=managed \
             --no-allow-unauthenticated \
             --set-env-vars="${ENV_VARS}" \
-            --set-secrets="DAIKIN_CLIENT_ID=DAIKIN_CLIENT_ID:latest,DAIKIN_CLIENT_SECRET=DAIKIN_CLIENT_SECRET:latest,DAIKIN_REFRESH_TOKEN=DAIKIN_REFRESH_TOKEN:latest" \
+            --set-secrets="DAIKIN_CLIENT_ID=DAIKIN_CLIENT_ID:latest,DAIKIN_CLIENT_SECRET=DAIKIN_CLIENT_SECRET:latest" \
             --project="${{ secrets.GCP_PROJECT_ID }}"
 
       # ── Capture service URL and set EXPECTED_AUDIENCE ─────────────────────

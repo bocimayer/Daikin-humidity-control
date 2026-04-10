@@ -50,6 +50,7 @@ echo "--- [1/9] Enabling GCP APIs..."
 gcloud services enable \
   run.googleapis.com \
   cloudscheduler.googleapis.com \
+  firestore.googleapis.com \
   secretmanager.googleapis.com \
   iam.googleapis.com \
   iamcredentials.googleapis.com \
@@ -109,11 +110,11 @@ for ROLE in \
   echo "    Granted ${ROLE}"
 done
 
-# ── 6. IAM: runtime SA reads secrets ──────────────────────────────────────────
-echo "--- [6/9] Granting secret access to Cloud Run runtime SA..."
+# ── 6. IAM: runtime SA reads secrets and writes Firestore ────────────────────
+echo "--- [6/9] Granting runtime access to Secret Manager and Firestore..."
 # Secrets must already exist before this step. If they don't yet, run this
 # section manually after creating them (see Step 7).
-for SECRET in DAIKIN_CLIENT_ID DAIKIN_CLIENT_SECRET DAIKIN_REFRESH_TOKEN; do
+for SECRET in DAIKIN_CLIENT_ID DAIKIN_CLIENT_SECRET; do
   if gcloud secrets describe "$SECRET" --project="$PROJECT_ID" &>/dev/null; then
     gcloud secrets add-iam-policy-binding "$SECRET" \
       --member="serviceAccount:${RUNTIME_SA}" \
@@ -129,13 +130,20 @@ for SECRET in DAIKIN_CLIENT_ID DAIKIN_CLIENT_SECRET DAIKIN_REFRESH_TOKEN; do
   fi
 done
 
+gcloud projects add-iam-policy-binding "$PROJECT_ID" \
+  --member="serviceAccount:${RUNTIME_SA}" \
+  --role="roles/datastore.user" \
+  --condition=None \
+  --quiet
+echo "    Granted roles/datastore.user to ${RUNTIME_SA}"
+
 # ── 7. Create Secret Manager secrets (values entered interactively) ───────────
 echo "--- [7/9] Creating Secret Manager secrets..."
 echo "    Enter each secret value when prompted (input is hidden)."
 echo "    Press ENTER to skip a secret that already exists."
 echo ""
 
-for SECRET in DAIKIN_CLIENT_ID DAIKIN_CLIENT_SECRET DAIKIN_REFRESH_TOKEN; do
+for SECRET in DAIKIN_CLIENT_ID DAIKIN_CLIENT_SECRET; do
   if gcloud secrets describe "$SECRET" --project="$PROJECT_ID" &>/dev/null; then
     echo "    Secret '${SECRET}' already exists — skipping."
   else
@@ -219,6 +227,10 @@ echo "  DRY_DURATION_MINUTES            = 120"
 echo "  LOG_LEVEL                       = info"
 echo ""
 echo "=== Bootstrap complete. ==="
+echo ""
+echo "Production runtime uses Firestore for the rotating refresh token."
+echo "After your first deploy, bootstrap Firestore once by running oauth-exchange"
+echo "with DAIKIN_TOKEN_STORE=firestore and the production Firestore document settings."
 echo ""
 echo "Next: add the GitHub secrets above, then push to main to trigger the first deploy."
 echo "After the first deploy, run setup/create-scheduler-jobs.sh to create Scheduler jobs."
