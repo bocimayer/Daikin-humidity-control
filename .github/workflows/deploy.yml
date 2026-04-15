@@ -185,9 +185,14 @@ jobs:
 
       # ── Smoke test ─────────────────────────────────────────────────────────
       - name: Smoke test /healthz
+        env:
+          GCP_DEPLOY_SA: ${{ secrets.GCP_DEPLOY_SA }}
         run: |
-          # WIF / SA JSON creds need an explicit audience for ID tokens (private Cloud Run).
-          TOKEN=$(gcloud auth print-identity-token --audiences="${SERVICE_URL}")
+          # WIF principal is not a service-account credential type; mint an ID token by
+          # impersonating the deploy SA (needs tokenCreator on that SA for the WIF identity).
+          TOKEN=$(gcloud auth print-identity-token \
+            --impersonate-service-account="${GCP_DEPLOY_SA}" \
+            --audiences="${SERVICE_URL}")
           HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
             -H "Authorization: Bearer ${TOKEN}" \
             "${SERVICE_URL}/healthz")
