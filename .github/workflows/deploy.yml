@@ -103,21 +103,41 @@ jobs:
           echo "IMAGE_TAG=$TAG" >> "$GITHUB_ENV"
 
       # ── Deploy to Cloud Run ────────────────────────────────────────────────
+      # JSON secrets (e.g. DAIKIN_DEVICE_IDS_JSON) contain commas; --set-env-vars
+      # is comma-separated and breaks on raw JSON. Use --env-vars-file (YAML).
       - name: Deploy to Cloud Run
+        env:
+          DAIKIN_DEVICE_IDS_JSON: ${{ secrets.DAIKIN_DEVICE_IDS_JSON }}
+          DAIKIN_HUMIDITY_LEADER_IDS_JSON: ${{ secrets.DAIKIN_HUMIDITY_LEADER_IDS_JSON }}
+          HEAT_TARGET_TEMP_C: ${{ secrets.HEAT_TARGET_TEMP_C || '16' }}
+          HUMIDITY_HIGH_THRESHOLD: ${{ secrets.HUMIDITY_HIGH_THRESHOLD || '70' }}
+          HUMIDITY_LOW_THRESHOLD: ${{ secrets.HUMIDITY_LOW_THRESHOLD || '60' }}
+          MODE_STRATEGY: ${{ secrets.MODE_STRATEGY || 'timer' }}
+          DRY_DURATION_MINUTES: ${{ secrets.DRY_DURATION_MINUTES || '120' }}
+          LOG_LEVEL: ${{ secrets.LOG_LEVEL || 'info' }}
         run: |
-          # Build the --set-env-vars string from secrets/defaults.
-          ENV_VARS="NODE_ENV=production"
-          ENV_VARS="${ENV_VARS},DAIKIN_TOKEN_STORE=firestore"
-          ENV_VARS="${ENV_VARS},DAIKIN_FIRESTORE_COLLECTION=oauth_tokens"
-          ENV_VARS="${ENV_VARS},DAIKIN_FIRESTORE_DOCUMENT=daikin_onecta"
-          ENV_VARS="${ENV_VARS},DAIKIN_DEVICE_IDS_JSON=${{ secrets.DAIKIN_DEVICE_IDS_JSON }}"
-          ENV_VARS="${ENV_VARS},DAIKIN_HUMIDITY_LEADER_IDS_JSON=${{ secrets.DAIKIN_HUMIDITY_LEADER_IDS_JSON }}"
-          ENV_VARS="${ENV_VARS},HEAT_TARGET_TEMP_C=${{ secrets.HEAT_TARGET_TEMP_C || '16' }}"
-          ENV_VARS="${ENV_VARS},HUMIDITY_HIGH_THRESHOLD=${{ secrets.HUMIDITY_HIGH_THRESHOLD || '70' }}"
-          ENV_VARS="${ENV_VARS},HUMIDITY_LOW_THRESHOLD=${{ secrets.HUMIDITY_LOW_THRESHOLD || '60' }}"
-          ENV_VARS="${ENV_VARS},MODE_STRATEGY=${{ secrets.MODE_STRATEGY || 'timer' }}"
-          ENV_VARS="${ENV_VARS},DRY_DURATION_MINUTES=${{ secrets.DRY_DURATION_MINUTES || '120' }}"
-          ENV_VARS="${ENV_VARS},LOG_LEVEL=${{ secrets.LOG_LEVEL || 'info' }}"
+          python3 <<'PY'
+          import json
+          import os
+
+          pairs = [
+              ("NODE_ENV", "production"),
+              ("DAIKIN_TOKEN_STORE", "firestore"),
+              ("DAIKIN_FIRESTORE_COLLECTION", "oauth_tokens"),
+              ("DAIKIN_FIRESTORE_DOCUMENT", "daikin_onecta"),
+              ("DAIKIN_DEVICE_IDS_JSON", os.environ["DAIKIN_DEVICE_IDS_JSON"]),
+              ("DAIKIN_HUMIDITY_LEADER_IDS_JSON", os.environ["DAIKIN_HUMIDITY_LEADER_IDS_JSON"]),
+              ("HEAT_TARGET_TEMP_C", os.environ["HEAT_TARGET_TEMP_C"]),
+              ("HUMIDITY_HIGH_THRESHOLD", os.environ["HUMIDITY_HIGH_THRESHOLD"]),
+              ("HUMIDITY_LOW_THRESHOLD", os.environ["HUMIDITY_LOW_THRESHOLD"]),
+              ("MODE_STRATEGY", os.environ["MODE_STRATEGY"]),
+              ("DRY_DURATION_MINUTES", os.environ["DRY_DURATION_MINUTES"]),
+              ("LOG_LEVEL", os.environ["LOG_LEVEL"]),
+          ]
+          with open("cloud-run-env.yaml", "w", encoding="utf-8") as f:
+              for key, val in pairs:
+                  f.write(f"{key}: {json.dumps(val)}\n")
+          PY
 
           gcloud run deploy ${{ env.SERVICE_NAME }} \
             --image="${{ env.IMAGE_TAG }}" \
@@ -125,7 +145,7 @@ jobs:
             --platform=managed \
             --no-allow-unauthenticated \
             --service-account="daikin-runtime-sa@${{ secrets.GCP_PROJECT_ID }}.iam.gserviceaccount.com" \
-            --set-env-vars="${ENV_VARS}" \
+            --env-vars-file=cloud-run-env.yaml \
             --set-secrets="DAIKIN_CLIENT_ID=DAIKIN_CLIENT_ID:latest,DAIKIN_CLIENT_SECRET=DAIKIN_CLIENT_SECRET:latest" \
             --project="${{ secrets.GCP_PROJECT_ID }}"
 
