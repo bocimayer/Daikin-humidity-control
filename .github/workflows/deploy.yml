@@ -188,15 +188,31 @@ jobs:
         env:
           GCP_DEPLOY_SA: ${{ secrets.GCP_DEPLOY_SA }}
         run: |
-          # WIF ADC yields access tokens as the deploy SA; use IAM Credentials to mint an
-          # OIDC token for the Cloud Run URL (no self-impersonation / TokenCreator needed).
-          ACCESS_TOKEN=$(gcloud auth print-access-token)
-          TOKEN=$(curl -sf -X POST \
-            "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/${GCP_DEPLOY_SA}:generateIdToken" \
-            -H "Authorization: Bearer ${ACCESS_TOKEN}" \
-            -H "Content-Type: application/json; charset=utf-8" \
-            -d "{\"audience\": \"${SERVICE_URL}\", \"includeEmail\": true}" \
-            | python3 -c "import sys, json; print(json.load(sys.stdin)['token'])")
+          # WIF ADC yields access tokens as the deploy SA; mint an OIDC token via IAM
+          # Credentials (@ in SA email must be URL-encoded in the path).
+          TOKEN=$(python3 <<'PY'
+          import json
+          import os
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+
+          access = os.popen("gcloud auth print-access-token").read().strip()
+          sa = os.environ["GCP_DEPLOY_SA"]
+          aud = os.environ["SERVICE_URL"]
+          enc = urllib.parse.quote(sa, safe="")
+          url = f"https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/{enc}:generateIdToken"
+          body = json.dumps({"audience": aud, "includeEmail": True}).encode("utf-8")
+          req = urllib.request.Request(url, data=body, method="POST")
+          req.add_header("Authorization", f"Bearer {access}")
+          req.add_header("Content-Type", "application/json; charset=utf-8")
+          try:
+              with urllib.request.urlopen(req) as resp:
+                  print(json.load(resp)["token"])
+          except urllib.error.HTTPError as e:
+              raise SystemExit(f"generateIdToken failed HTTP {e.code}: {e.read().decode()!r}") from e
+          PY
+          )
           HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
             -H "Authorization: Bearer ${TOKEN}" \
             "${SERVICE_URL}/healthz")
