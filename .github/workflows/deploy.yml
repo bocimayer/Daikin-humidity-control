@@ -116,6 +116,14 @@ jobs:
           DRY_DURATION_MINUTES: ${{ secrets.DRY_DURATION_MINUTES || '120' }}
           LOG_LEVEL: ${{ secrets.LOG_LEVEL || 'info' }}
         run: |
+          # Default service URL (OIDC audience) is fixed for a given project + region + name:
+          # https://<service>-<PROJECT_NUMBER>.<region>.run.app
+          # App requires EXPECTED_AUDIENCE at startup; it cannot be set only after deploy.
+          PROJECT_NUMBER=$(gcloud projects describe "${{ secrets.GCP_PROJECT_ID }}" --format="value(projectNumber)")
+          EXPECTED_AUDIENCE="https://${{ env.SERVICE_NAME }}-${PROJECT_NUMBER}.${{ secrets.GCP_REGION }}.run.app"
+          export EXPECTED_AUDIENCE
+          echo "SERVICE_URL=${EXPECTED_AUDIENCE}" >> "$GITHUB_ENV"
+
           python3 <<'PY'
           import json
           import os
@@ -125,6 +133,7 @@ jobs:
               ("DAIKIN_TOKEN_STORE", "firestore"),
               ("DAIKIN_FIRESTORE_COLLECTION", "oauth_tokens"),
               ("DAIKIN_FIRESTORE_DOCUMENT", "daikin_onecta"),
+              ("EXPECTED_AUDIENCE", os.environ["EXPECTED_AUDIENCE"]),
               ("DAIKIN_DEVICE_IDS_JSON", os.environ["DAIKIN_DEVICE_IDS_JSON"]),
               ("DAIKIN_HUMIDITY_LEADER_IDS_JSON", os.environ["DAIKIN_HUMIDITY_LEADER_IDS_JSON"]),
               ("HEAT_TARGET_TEMP_C", os.environ["HEAT_TARGET_TEMP_C"]),
@@ -149,21 +158,18 @@ jobs:
             --set-secrets="DAIKIN_CLIENT_ID=DAIKIN_CLIENT_ID:latest,DAIKIN_CLIENT_SECRET=DAIKIN_CLIENT_SECRET:latest" \
             --project="${{ secrets.GCP_PROJECT_ID }}"
 
-      # ── Capture service URL and set EXPECTED_AUDIENCE ─────────────────────
-      - name: Update EXPECTED_AUDIENCE env var
+      # ── Confirm URL from API (must match computed EXPECTED_AUDIENCE) ───────
+      - name: Verify Cloud Run service URL
         run: |
-          SERVICE_URL=$(gcloud run services describe ${{ env.SERVICE_NAME }} \
+          ACTUAL_URL=$(gcloud run services describe ${{ env.SERVICE_NAME }} \
             --region="${{ secrets.GCP_REGION }}" \
             --format="value(status.url)" \
             --project="${{ secrets.GCP_PROJECT_ID }}")
-
-          gcloud run services update ${{ env.SERVICE_NAME }} \
-            --region="${{ secrets.GCP_REGION }}" \
-            --update-env-vars="EXPECTED_AUDIENCE=${SERVICE_URL}" \
-            --project="${{ secrets.GCP_PROJECT_ID }}"
-
-          echo "Service deployed at: ${SERVICE_URL}"
-          echo "SERVICE_URL=${SERVICE_URL}" >> "$GITHUB_ENV"
+          echo "Service URL (API): ${ACTUAL_URL}"
+          if [ "${ACTUAL_URL}" != "${SERVICE_URL}" ]; then
+            echo "::error::SERVICE_URL mismatch: GITHUB_ENV has ${SERVICE_URL}, API has ${ACTUAL_URL}"
+            exit 1
+          fi
 
       # ── Smoke test ─────────────────────────────────────────────────────────
       - name: Smoke test /healthz
