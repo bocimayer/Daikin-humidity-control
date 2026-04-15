@@ -1,0 +1,169 @@
+name: Deploy to Cloud Run
+
+# Triggers:
+#   - Push to main or the active development branch → automatic deploy
+#   - Manual dispatch → run from any branch on demand
+on:
+  push:
+    branches:
+      - main
+      - claude/daikin-gcp-automation-5okfl
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Target environment"
+        required: true
+        default: "production"
+        type: choice
+        options: [production]
+
+env:
+  # ── Set these in GitHub → Settings → Secrets and variables → Actions ─────
+  # Required secrets:
+  #   GCP_PROJECT_ID                    e.g. my-gcp-project-123
+  #   GCP_REGION                        e.g. europe-central2
+  #   GCP_WORKLOAD_IDENTITY_PROVIDER    projects/PROJECT_NUMBER/locations/global/workloadIdentityPools/POOL/providers/PROVIDER
+  #   GCP_DEPLOY_SA                     deploy-sa@my-gcp-project-123.iam.gserviceaccount.com
+  # Cloud Run runtime SA id must match GCP (default: daikin-runtime-sa; see setup/bootstrap.sh).
+  #   DAIKIN_DEVICE_IDS_JSON            ["uuid-1","uuid-2"]
+  #   DAIKIN_HUMIDITY_LEADER_IDS_JSON   ["uuid-1"]
+  # Optional secrets (override runtime behaviour):
+  #   HEAT_TARGET_TEMP_C                default: 16
+  #   HUMIDITY_HIGH_THRESHOLD           default: 70
+  #   HUMIDITY_LOW_THRESHOLD            default: 60
+  #   MODE_STRATEGY                     default: timer
+  #   DRY_DURATION_MINUTES              default: 120
+  #   LOG_LEVEL                         default: info
+
+  SERVICE_NAME: daikin-humidity-control
+jobs:
+  deploy:
+    name: Build & Deploy
+    runs-on: ubuntu-latest
+    # Needed for Workload Identity Federation token request.
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ── Run tests before deploying ─────────────────────────────────────────
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
+        run: npm test
+
+      # ── Authenticate to GCP via Workload Identity Federation ───────────────
+      # Keyless: no long-lived service-account JSON key is stored in GitHub.
+      - name: Authenticate to Google Cloud
+        id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_DEPLOY_SA }}
+
+      - name: Set up gcloud CLI
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ secrets.GCP_PROJECT_ID }}
+
+      # ── Build & push Docker image to Artifact Registry ─────────────────────
+      - name: Configure Docker for Artifact Registry
+        run: |
+          gcloud auth configure-docker ${{ secrets.GCP_REGION }}-docker.pkg.dev --quiet
+
+      - name: Build and push image
+        run: |
+          IMAGE="${{ secrets.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/daikin/${{ env.SERVICE_NAME }}"
+          TAG="${IMAGE}:${{ github.sha }}"
+          LATEST="${IMAGE}:latest"
+
+          docker build \
+            --tag "$TAG" \
+            --tag "$LATEST" \
+            --label "git.sha=${{ github.sha }}" \
+            --label "git.ref=${{ github.ref_name }}" \
+            .
+
+          docker push "$TAG"
+          docker push "$LATEST"
+
+          # Export for subsequent steps.
+          echo "IMAGE_TAG=$TAG" >> "$GITHUB_ENV"
+
+      # ── Deploy to Cloud Run ────────────────────────────────────────────────
+      - name: Deploy to Cloud Run
+        run: |
+          # Build the --set-env-vars string from secrets/defaults.
+          ENV_VARS="NODE_ENV=production"
+          ENV_VARS="${ENV_VARS},DAIKIN_TOKEN_STORE=firestore"
+          ENV_VARS="${ENV_VARS},DAIKIN_FIRESTORE_COLLECTION=oauth_tokens"
+          ENV_VARS="${ENV_VARS},DAIKIN_FIRESTORE_DOCUMENT=daikin_onecta"
+          ENV_VARS="${ENV_VARS},DAIKIN_DEVICE_IDS_JSON=${{ secrets.DAIKIN_DEVICE_IDS_JSON }}"
+          ENV_VARS="${ENV_VARS},DAIKIN_HUMIDITY_LEADER_IDS_JSON=${{ secrets.DAIKIN_HUMIDITY_LEADER_IDS_JSON }}"
+          ENV_VARS="${ENV_VARS},HEAT_TARGET_TEMP_C=${{ secrets.HEAT_TARGET_TEMP_C || '16' }}"
+          ENV_VARS="${ENV_VARS},HUMIDITY_HIGH_THRESHOLD=${{ secrets.HUMIDITY_HIGH_THRESHOLD || '70' }}"
+          ENV_VARS="${ENV_VARS},HUMIDITY_LOW_THRESHOLD=${{ secrets.HUMIDITY_LOW_THRESHOLD || '60' }}"
+          ENV_VARS="${ENV_VARS},MODE_STRATEGY=${{ secrets.MODE_STRATEGY || 'timer' }}"
+          ENV_VARS="${ENV_VARS},DRY_DURATION_MINUTES=${{ secrets.DRY_DURATION_MINUTES || '120' }}"
+          ENV_VARS="${ENV_VARS},LOG_LEVEL=${{ secrets.LOG_LEVEL || 'info' }}"
+
+          gcloud run deploy ${{ env.SERVICE_NAME }} \
+            --image="${{ env.IMAGE_TAG }}" \
+            --region="${{ secrets.GCP_REGION }}" \
+            --platform=managed \
+            --no-allow-unauthenticated \
+            --service-account="daikin-runtime-sa@${{ secrets.GCP_PROJECT_ID }}.iam.gserviceaccount.com" \
+            --set-env-vars="${ENV_VARS}" \
+            --set-secrets="DAIKIN_CLIENT_ID=DAIKIN_CLIENT_ID:latest,DAIKIN_CLIENT_SECRET=DAIKIN_CLIENT_SECRET:latest" \
+            --project="${{ secrets.GCP_PROJECT_ID }}"
+
+      # ── Capture service URL and set EXPECTED_AUDIENCE ─────────────────────
+      - name: Update EXPECTED_AUDIENCE env var
+        run: |
+          SERVICE_URL=$(gcloud run services describe ${{ env.SERVICE_NAME }} \
+            --region="${{ secrets.GCP_REGION }}" \
+            --format="value(status.url)" \
+            --project="${{ secrets.GCP_PROJECT_ID }}")
+
+          gcloud run services update ${{ env.SERVICE_NAME }} \
+            --region="${{ secrets.GCP_REGION }}" \
+            --update-env-vars="EXPECTED_AUDIENCE=${SERVICE_URL}" \
+            --project="${{ secrets.GCP_PROJECT_ID }}"
+
+          echo "Service deployed at: ${SERVICE_URL}"
+          echo "SERVICE_URL=${SERVICE_URL}" >> "$GITHUB_ENV"
+
+      # ── Smoke test ─────────────────────────────────────────────────────────
+      - name: Smoke test /healthz
+        run: |
+          TOKEN=$(gcloud auth print-identity-token)
+          HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+            -H "Authorization: Bearer ${TOKEN}" \
+            "${SERVICE_URL}/healthz")
+
+          if [ "$HTTP_STATUS" != "200" ]; then
+            echo "Health check failed with HTTP $HTTP_STATUS"
+            exit 1
+          fi
+          echo "Health check passed (HTTP $HTTP_STATUS)"
+
+      - name: Deployment summary
+        run: |
+          echo "### Deployment complete" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| | |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| **Service** | ${{ env.SERVICE_NAME }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| **Image** | \`${{ env.IMAGE_TAG }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| **URL** | ${{ env.SERVICE_URL }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| **Commit** | ${{ github.sha }} |" >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,379 @@
+# Deployment Readiness
+
+## Purpose
+
+This document describes everything required to turn `daikin-humidity-control`
+into a real deployed product.
+
+It covers:
+
+- Daikin developer setup
+- GCP infrastructure
+- CI/CD pipeline requirements
+- production token handling
+- Cloud Scheduler setup
+- operational readiness
+- current blockers in this repo
+
+---
+
+## System Overview
+
+There are two deployed services:
+
+1. `daikin-oauth-stub`
+   - public Cloud Run service
+   - provides a stable HTTPS OAuth redirect URI for Daikin
+2. `daikin-humidity-control`
+   - private Cloud Run service
+   - called by Cloud Scheduler with OIDC
+   - reads humidity and controls Daikin devices
+
+There are also two different kinds of auth state:
+
+1. Static credentials
+   - `DAIKIN_CLIENT_ID`
+   - `DAIKIN_CLIENT_SECRET`
+2. Mutable token state
+   - latest rotating `refreshToken`
+
+These must not be stored the same way.
+
+---
+
+## Production Auth Model
+
+The intended production auth flow is:
+
+1. A human completes the browser OAuth consent flow once.
+2. That produces the first valid `refresh_token`.
+3. The first refresh token is stored in Firestore.
+4. Cloud Run reads the latest refresh token from Firestore.
+5. Cloud Run exchanges it for short-lived access tokens as needed.
+6. If Daikin rotates the refresh token, Cloud Run writes the new one back to Firestore.
+
+This means:
+
+- Secret Manager stores static app credentials.
+- Firestore stores the latest rotating refresh token.
+- GitHub Actions should not manage the rotating refresh token.
+
+---
+
+## Required GCP Services
+
+These APIs must be enabled:
+
+- `run.googleapis.com`
+- `cloudscheduler.googleapis.com`
+- `secretmanager.googleapis.com`
+- `iam.googleapis.com`
+- `iamcredentials.googleapis.com`
+- `artifactregistry.googleapis.com`
+- `cloudbuild.googleapis.com`
+- `firestore.googleapis.com`
+
+---
+
+## Required GCP Resources
+
+### Cloud Run
+
+You need:
+
+- one private service: `daikin-humidity-control`
+- one public service: `daikin-oauth-stub`
+
+### Artifact Registry
+
+You need:
+
+- one Docker repo, currently assumed to be `daikin`
+
+### Secret Manager
+
+You need these static secrets:
+
+- `DAIKIN_CLIENT_ID`
+- `DAIKIN_CLIENT_SECRET`
+
+Do not use Secret Manager as the long-term storage for the rotating refresh token.
+
+### Firestore
+
+You need a document for the latest refresh token.
+
+Recommended shape:
+
+- collection: `oauth_tokens`
+- document: `daikin_onecta`
+
+Recommended fields:
+
+- `refreshToken`
+- `updatedAt`
+- `source`
+
+### Cloud Scheduler
+
+You need jobs that call the main Cloud Run service over HTTPS with OIDC.
+
+---
+
+## Required IAM
+
+### Deploy service account
+
+Used by GitHub Actions to deploy.
+
+Current repo expects:
+
+- `daikin-deploy-sa`
+
+Required roles:
+
+- `roles/run.admin`
+- `roles/artifactregistry.writer`
+- `roles/iam.serviceAccountUser`
+- `roles/secretmanager.viewer`
+
+### Scheduler service account
+
+Used by Cloud Scheduler to call the private app.
+
+Current repo expects:
+
+- `daikin-scheduler-sa`
+
+Required role:
+
+- `roles/run.invoker` on `daikin-humidity-control`
+
+### Cloud Run runtime service account
+
+Used by the running app itself.
+
+Required access:
+
+- Secret Manager read access for:
+  - `DAIKIN_CLIENT_ID`
+  - `DAIKIN_CLIENT_SECRET`
+- Firestore read/write access for the token document
+
+Suggested role:
+
+- `roles/datastore.user`
+
+Recommendation:
+
+- use a dedicated runtime service account instead of the default compute service account
+
+---
+
+## Required GitHub Actions Secrets
+
+At minimum:
+
+- `GCP_PROJECT_ID`
+- `GCP_REGION`
+- `GCP_WORKLOAD_IDENTITY_PROVIDER`
+- `GCP_DEPLOY_SA`
+- `DAIKIN_DEVICE_IDS_JSON`
+- `DAIKIN_HUMIDITY_LEADER_IDS_JSON`
+
+Optional runtime tuning:
+
+- `HEAT_TARGET_TEMP_C`
+- `HUMIDITY_HIGH_THRESHOLD`
+- `HUMIDITY_LOW_THRESHOLD`
+- `MODE_STRATEGY`
+- `DRY_DURATION_MINUTES`
+- `LOG_LEVEL`
+
+---
+
+## Required Cloud Run Runtime Configuration
+
+The main app should run with environment like:
+
+```text
+NODE_ENV=production
+DAIKIN_TOKEN_STORE=firestore
+DAIKIN_FIRESTORE_COLLECTION=oauth_tokens
+DAIKIN_FIRESTORE_DOCUMENT=daikin_onecta
+DAIKIN_DEVICE_IDS_JSON=[...]
+DAIKIN_HUMIDITY_LEADER_IDS_JSON=[...]
+HEAT_TARGET_TEMP_C=16
+HUMIDITY_HIGH_THRESHOLD=70
+HUMIDITY_LOW_THRESHOLD=60
+MODE_STRATEGY=timer
+DRY_DURATION_MINUTES=120
+LOG_LEVEL=info
+EXPECTED_AUDIENCE=<Cloud Run service URL>
+```
+
+Static secrets should be mounted from Secret Manager:
+
+- `DAIKIN_CLIENT_ID`
+- `DAIKIN_CLIENT_SECRET`
+
+The rotating refresh token should come from Firestore, not a static mounted env var.
+
+---
+
+## Daikin Developer Portal Setup
+
+You need an application in the Daikin developer portal with:
+
+- auth strategy: `Onecta OIDC`
+- a registered HTTPS redirect URI
+- a client ID
+- a client secret
+
+The redirect URI should point to the public OAuth stub:
+
+```text
+https://<oauth-stub-url>/oauth/callback
+```
+
+---
+
+## One-Time Production Bootstrap
+
+This is the one manual step that cannot be avoided.
+
+1. Deploy `daikin-oauth-stub`.
+2. Register its callback URL in the Daikin developer portal.
+3. Run the OAuth flow once.
+4. Exchange the authorization code.
+5. Store the first valid refresh token in Firestore.
+
+After that, production should keep itself alive automatically by rotating the token in Firestore.
+
+---
+
+## Scheduler Design
+
+### Timer mode
+
+Jobs:
+
+- `POST /tasks/dry-start`
+- `POST /tasks/dry-stop`
+
+### Humidity mode
+
+Jobs:
+
+- `POST /tasks/check-humidity`
+- `POST /tasks/dry-stop` as a safety stop
+
+All scheduler jobs must:
+
+- use OIDC
+- use the scheduler service account
+- set OIDC audience to the Cloud Run service URL
+
+---
+
+## Production Validation Checklist
+
+After deployment, verify all of these:
+
+### OAuth and token flow
+
+- OAuth stub is public and reachable
+- Daikin redirect URI is correctly registered
+- first refresh token is stored in Firestore
+- Cloud Run can read Firestore
+- Cloud Run can write rotated refresh tokens back to Firestore
+
+### Main app
+
+- `daikin-humidity-control` is deployed successfully
+- `EXPECTED_AUDIENCE` matches the real Cloud Run URL
+- `/healthz` returns `200`
+- private `/tasks/*` endpoints reject unauthenticated traffic
+- scheduler OIDC calls are accepted
+
+### Daikin integration
+
+- list devices works
+- read device state works
+- write one reversible control action works
+- a fresh Cloud Run instance still works after a token refresh
+
+### Scheduler
+
+- jobs exist
+- jobs run on schedule
+- manual job execution works
+- logs show successful execution
+
+### Operations
+
+- logs are visible in Cloud Logging
+- token refresh failures are visible in logs
+- Firestore token document updates after rotation
+- quota usage stays within Onecta limits
+
+---
+
+## Operational Runbooks You Need
+
+You should have procedures for:
+
+- initial production bootstrap
+- re-auth after token expiry or revocation
+- Firestore token document missing or corrupted
+- scheduler stopped or misconfigured
+- Cloud Run runtime IAM broken
+- Daikin `invalid_grant` recovery
+
+---
+
+## Remaining Gaps
+
+These are the main blockers before this becomes production-ready.
+
+### 1. Firestore bootstrap still needs an explicit operator step
+
+The app supports Firestore token persistence, but production still needs:
+
+- Firestore database initialized in the target project
+- a documented operator step to write the first refresh token into Firestore
+
+### 2. Production bootstrap helper is still manual
+
+The documented bootstrap path works, but it is still driven by the OAuth helper
+scripts plus operator-supplied Firestore settings. There is no dedicated
+production bootstrap helper yet.
+
+### 3. Dedicated runtime service account is still recommended
+
+The current setup can work with the default compute runtime identity, but a
+dedicated Cloud Run runtime service account would be cleaner and easier to audit.
+
+---
+
+## What "Done" Looks Like
+
+This is production-ready when all of the following are true:
+
+1. OAuth stub is deployed and registered with Daikin.
+2. Main app is deployed privately on Cloud Run.
+3. Static credentials are in Secret Manager.
+4. Latest refresh token is in Firestore.
+5. Cloud Run can read and update that Firestore token.
+6. Scheduler calls the app successfully with OIDC.
+7. A cold start after token rotation still succeeds without human action.
+8. Re-auth is only needed when Daikin auth is revoked or expires.
+
+---
+
+## Recommended Next Work Items
+
+1. Add a production bootstrap helper that writes the first refresh token into Firestore.
+2. Add a post-deploy verification step that confirms Firestore token read/write works.
+3. Introduce a dedicated Cloud Run runtime service account.
+4. Write a short runbook for production re-auth and token recovery.
