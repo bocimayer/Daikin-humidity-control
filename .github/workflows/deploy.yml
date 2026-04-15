@@ -40,6 +40,8 @@ jobs:
   deploy:
     name: Build & Deploy
     runs-on: ubuntu-latest
+    # Picks up secrets from Settings → Environments → gcp (not repository secrets).
+    environment: gcp
     # Needed for Workload Identity Federation token request.
     permissions:
       contents: read

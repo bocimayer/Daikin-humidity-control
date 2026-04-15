@@ -19,6 +19,7 @@ jobs:
   deploy-stub:
     name: Build & deploy OAuth stub
     runs-on: ubuntu-latest
+    environment: gcp
     permissions:
       contents: read
       id-token: write
