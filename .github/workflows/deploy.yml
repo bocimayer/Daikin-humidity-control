@@ -186,7 +186,8 @@ jobs:
       # ── Smoke test ─────────────────────────────────────────────────────────
       - name: Smoke test /healthz
         run: |
-          TOKEN=$(gcloud auth print-identity-token)
+          # WIF / SA JSON creds need an explicit audience for ID tokens (private Cloud Run).
+          TOKEN=$(gcloud auth print-identity-token --audiences="${SERVICE_URL}")
           HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
             -H "Authorization: Bearer ${TOKEN}" \
             "${SERVICE_URL}/healthz")
