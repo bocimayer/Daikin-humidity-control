@@ -116,13 +116,21 @@ jobs:
           DRY_DURATION_MINUTES: ${{ secrets.DRY_DURATION_MINUTES || '120' }}
           LOG_LEVEL: ${{ secrets.LOG_LEVEL || 'info' }}
         run: |
-          # Default service URL (OIDC audience) is fixed for a given project + region + name:
-          # https://<service>-<PROJECT_NUMBER>.<region>.run.app
-          # App requires EXPECTED_AUDIENCE at startup; it cannot be set only after deploy.
-          PROJECT_NUMBER=$(gcloud projects describe "${{ secrets.GCP_PROJECT_ID }}" --format="value(projectNumber)")
-          EXPECTED_AUDIENCE="https://${{ env.SERVICE_NAME }}-${PROJECT_NUMBER}.${{ secrets.GCP_REGION }}.run.app"
+          # OIDC audience must equal status.url from the API. That URL is not derivable from
+          # project id/region alone (Cloud Run may use *.a.run.app hostnames). The app requires
+          # a non-empty EXPECTED_AUDIENCE at startup, so: reuse the URL if the service already
+          # exists; otherwise use a placeholder, then reconcile after deploy (see next step).
+          EXISTING_URL=$(gcloud run services describe ${{ env.SERVICE_NAME }} \
+            --region="${{ secrets.GCP_REGION }}" \
+            --format="value(status.url)" \
+            --project="${{ secrets.GCP_PROJECT_ID }}" 2>/dev/null || true)
+          if [ -n "${EXISTING_URL}" ]; then
+            EXPECTED_AUDIENCE="${EXISTING_URL}"
+          else
+            EXPECTED_AUDIENCE="https://cloud-run-audience-bootstrap.invalid"
+          fi
           export EXPECTED_AUDIENCE
-          echo "SERVICE_URL=${EXPECTED_AUDIENCE}" >> "$GITHUB_ENV"
+          echo "DEPLOY_EXPECTED_AUDIENCE=${EXPECTED_AUDIENCE}" >> "$GITHUB_ENV"
 
           python3 <<'PY'
           import json
@@ -158,17 +166,21 @@ jobs:
             --set-secrets="DAIKIN_CLIENT_ID=DAIKIN_CLIENT_ID:latest,DAIKIN_CLIENT_SECRET=DAIKIN_CLIENT_SECRET:latest" \
             --project="${{ secrets.GCP_PROJECT_ID }}"
 
-      # ── Confirm URL from API (must match computed EXPECTED_AUDIENCE) ───────
-      - name: Verify Cloud Run service URL
+      # ── Set canonical EXPECTED_AUDIENCE (first deploy only needs reconcile) ─
+      - name: Reconcile EXPECTED_AUDIENCE with Cloud Run URL
         run: |
-          ACTUAL_URL=$(gcloud run services describe ${{ env.SERVICE_NAME }} \
+          REAL_URL=$(gcloud run services describe ${{ env.SERVICE_NAME }} \
             --region="${{ secrets.GCP_REGION }}" \
             --format="value(status.url)" \
             --project="${{ secrets.GCP_PROJECT_ID }}")
-          echo "Service URL (API): ${ACTUAL_URL}"
-          if [ "${ACTUAL_URL}" != "${SERVICE_URL}" ]; then
-            echo "::error::SERVICE_URL mismatch: GITHUB_ENV has ${SERVICE_URL}, API has ${ACTUAL_URL}"
-            exit 1
+          echo "SERVICE_URL=${REAL_URL}" >> "$GITHUB_ENV"
+          echo "Cloud Run URL: ${REAL_URL}"
+          if [ "${DEPLOY_EXPECTED_AUDIENCE}" != "${REAL_URL}" ]; then
+            echo "Updating EXPECTED_AUDIENCE to canonical URL (bootstrap or URL format change)"
+            gcloud run services update ${{ env.SERVICE_NAME }} \
+              --region="${{ secrets.GCP_REGION }}" \
+              --update-env-vars="^|^EXPECTED_AUDIENCE=${REAL_URL}" \
+              --project="${{ secrets.GCP_PROJECT_ID }}"
           fi
 
       # ── Smoke test ─────────────────────────────────────────────────────────
