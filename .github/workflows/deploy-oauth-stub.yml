@@ -65,6 +65,7 @@ jobs:
             --region="${{ secrets.GCP_REGION }}" \
             --platform=managed \
             --allow-unauthenticated \
+            --service-account="daikin-runtime-sa@${{ secrets.GCP_PROJECT_ID }}.iam.gserviceaccount.com" \
             --project="${{ secrets.GCP_PROJECT_ID }}"
 
       - name: Print redirect URI for Daikin portal

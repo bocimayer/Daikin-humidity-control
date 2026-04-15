@@ -24,6 +24,7 @@ env:
   #   GCP_REGION                        e.g. europe-central2
   #   GCP_WORKLOAD_IDENTITY_PROVIDER    projects/PROJECT_NUMBER/locations/global/workloadIdentityPools/POOL/providers/PROVIDER
   #   GCP_DEPLOY_SA                     deploy-sa@my-gcp-project-123.iam.gserviceaccount.com
+  # Cloud Run runtime SA id must match GCP (default: daikin-runtime-sa; see setup/bootstrap.sh).
   #   DAIKIN_DEVICE_IDS_JSON            ["uuid-1","uuid-2"]
   #   DAIKIN_HUMIDITY_LEADER_IDS_JSON   ["uuid-1"]
   # Optional secrets (override runtime behaviour):
@@ -121,6 +122,7 @@ jobs:
             --region="${{ secrets.GCP_REGION }}" \
             --platform=managed \
             --no-allow-unauthenticated \
+            --service-account="daikin-runtime-sa@${{ secrets.GCP_PROJECT_ID }}.iam.gserviceaccount.com" \
             --set-env-vars="${ENV_VARS}" \
             --set-secrets="DAIKIN_CLIENT_ID=DAIKIN_CLIENT_ID:latest,DAIKIN_CLIENT_SECRET=DAIKIN_CLIENT_SECRET:latest" \
             --project="${{ secrets.GCP_PROJECT_ID }}"
