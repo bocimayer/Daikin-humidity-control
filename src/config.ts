@@ -16,32 +16,6 @@ import {
   resolveDefaultTokenStoreBackend,
 } from './env-defaults';
 
-/**
- * Parses a JSON array of strings from an environment variable.
- * Fails fast with a descriptive error if the value is missing or malformed.
- */
-function jsonStringArray(envKey: string): z.ZodEffects<z.ZodString, string[], string> {
-  return z.string().transform((val, ctx) => {
-    try {
-      const parsed = JSON.parse(val) as unknown;
-      if (!Array.isArray(parsed) || parsed.some((v) => typeof v !== 'string')) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: `${envKey} must be a JSON array of strings, e.g. ["id1","id2"]`,
-        });
-        return z.NEVER;
-      }
-      return parsed as string[];
-    } catch {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: `${envKey} is not valid JSON`,
-      });
-      return z.NEVER;
-    }
-  });
-}
-
 function optionalTrimmedString() {
   return z.preprocess((val) => {
     if (typeof val !== 'string') return val;
@@ -66,9 +40,6 @@ const EnvSchema = z.object({
   DAIKIN_TOKEN_FILE_PATH: optionalTrimmedString(),
   DAIKIN_FIRESTORE_COLLECTION: z.string().default(DEFAULT_FIRESTORE_COLLECTION),
   DAIKIN_FIRESTORE_DOCUMENT: z.string().default(DEFAULT_FIRESTORE_DOCUMENT),
-
-  DAIKIN_DEVICE_IDS_JSON: jsonStringArray('DAIKIN_DEVICE_IDS_JSON'),
-  DAIKIN_HUMIDITY_LEADER_IDS_JSON: jsonStringArray('DAIKIN_HUMIDITY_LEADER_IDS_JSON'),
 
   DRY_DURATION_MINUTES: z.coerce.number().int().positive().default(DEFAULT_DRY_DURATION_MINUTES),
   HEAT_TARGET_TEMP_C: z.coerce.number().min(5).max(30).default(DEFAULT_HEAT_TARGET_TEMP_C),
@@ -98,8 +69,6 @@ export type AppConfig = {
       firestoreCollection: string;
       firestoreDocument: string;
     };
-    deviceIds: string[];
-    humidityLeaderIds: string[];
   };
   dryDurationMinutes: number;
   heatTargetTempC: number;
@@ -145,8 +114,6 @@ function loadConfig(): AppConfig {
         firestoreCollection: env.DAIKIN_FIRESTORE_COLLECTION,
         firestoreDocument: env.DAIKIN_FIRESTORE_DOCUMENT,
       },
-      deviceIds: env.DAIKIN_DEVICE_IDS_JSON,
-      humidityLeaderIds: env.DAIKIN_HUMIDITY_LEADER_IDS_JSON,
     },
     dryDurationMinutes: env.DRY_DURATION_MINUTES,
     heatTargetTempC: env.HEAT_TARGET_TEMP_C,

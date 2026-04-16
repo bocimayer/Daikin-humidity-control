@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { DaikinClient, OperationMode } from './daikin';
+import { resolveGatewayDeviceIds } from './device-ids';
 import { HumidityStateMachine } from './humidity';
 import { IdempotencyGuard } from './idempotency';
 import { config } from './config';
@@ -52,10 +53,11 @@ async function applyToAllDevices(
 async function executeDryStart(
   client: DaikinClient,
   humidityFsm: HumidityStateMachine,
+  deviceIds: string[],
 ): Promise<DeviceResult[]> {
   const results = await applyToAllDevices(
     (id) => client.setOperationMode(id, 'dry' as OperationMode),
-    config.daikin.deviceIds,
+    deviceIds,
     'setMode:dry',
   );
   humidityFsm.setActive(true);
@@ -67,11 +69,12 @@ async function executeDryStart(
 async function executeDryStop(
   client: DaikinClient,
   humidityFsm: HumidityStateMachine,
+  deviceIds: string[],
 ): Promise<DeviceResult[]> {
   // First set all units back to heating mode.
   const modeResults = await applyToAllDevices(
     (id) => client.setOperationMode(id, 'heating' as OperationMode),
-    config.daikin.deviceIds,
+    deviceIds,
     'setMode:heating',
   );
 
@@ -113,10 +116,17 @@ export function createRouter(
       return;
     }
 
-    logger.info({ task: TASK_DRY_START, devices: config.daikin.deviceIds }, 'Starting dry cycle');
+    const deviceIds = await resolveGatewayDeviceIds(client);
+    if (deviceIds.length === 0) {
+      logger.warn({ task: TASK_DRY_START }, 'Onecta lists no gateway devices — skipping dry-start');
+      res.status(200).json({ skipped: true, reason: 'no-gateway-devices' });
+      return;
+    }
+
+    logger.info({ task: TASK_DRY_START, devices: deviceIds }, 'Starting dry cycle');
 
     try {
-      const results = await executeDryStart(client, humidityFsm);
+      const results = await executeDryStart(client, humidityFsm, deviceIds);
       const succeeded = results.filter((r) => r.success).length;
       logger.info(
         { task: TASK_DRY_START, succeeded, total: results.length },
@@ -137,13 +147,20 @@ export function createRouter(
       return;
     }
 
+    const deviceIds = await resolveGatewayDeviceIds(client);
+    if (deviceIds.length === 0) {
+      logger.warn({ task: TASK_DRY_STOP }, 'Onecta lists no gateway devices — skipping dry-stop');
+      res.status(200).json({ skipped: true, reason: 'no-gateway-devices' });
+      return;
+    }
+
     logger.info(
-      { task: TASK_DRY_STOP, devices: config.daikin.deviceIds, targetTempC: config.heatTargetTempC },
+      { task: TASK_DRY_STOP, devices: deviceIds, targetTempC: config.heatTargetTempC },
       'Stopping dry cycle, reverting to frost-protection heat',
     );
 
     try {
-      const results = await executeDryStop(client, humidityFsm);
+      const results = await executeDryStop(client, humidityFsm, deviceIds);
       const succeeded = results.filter((r) => r.success).length;
       logger.info(
         { task: TASK_DRY_STOP, succeeded, total: results.length },
@@ -176,20 +193,24 @@ export function createRouter(
       return;
     }
 
-    logger.info(
-      { leaderIds: config.daikin.humidityLeaderIds },
-      'Checking humidity from leader devices',
-    );
+    const deviceIds = await resolveGatewayDeviceIds(client);
+    if (deviceIds.length === 0) {
+      logger.warn({ task: TASK_CHECK_HUMIDITY }, 'Onecta lists no gateway devices — skipping');
+      res.status(200).json({ skipped: true, reason: 'no-gateway-devices' });
+      return;
+    }
+
+    logger.info({ task: TASK_CHECK_HUMIDITY, devices: deviceIds }, 'Checking humidity from gateway devices');
 
     try {
-      // Read state from each leader device.
+      // Read state from each gateway device (humidity may be null on some models).
       const stateResults = await Promise.allSettled(
-        config.daikin.humidityLeaderIds.map((id) => client.getDeviceState(id)),
+        deviceIds.map((id) => client.getDeviceState(id)),
       );
 
       const humidityReadings: number[] = [];
       for (const [idx, result] of stateResults.entries()) {
-        const deviceId = config.daikin.humidityLeaderIds[idx];
+        const deviceId = deviceIds[idx];
         if (result.status === 'fulfilled') {
           const { humidity } = result.value;
           if (humidity !== null) {
@@ -239,14 +260,14 @@ export function createRouter(
           res.status(200).json({ action: 'start-blocked', humidity: avgHumidity });
           return;
         }
-        await executeDryStart(client, humidityFsm);
+        await executeDryStart(client, humidityFsm, deviceIds);
       } else if (decision === 'stop') {
         if (!idempotency.checkAndMark(TASK_DRY_STOP)) {
           logger.info('Humidity triggered dry-stop but idempotency guard blocked it');
           res.status(200).json({ action: 'stop-blocked', humidity: avgHumidity });
           return;
         }
-        await executeDryStop(client, humidityFsm);
+        await executeDryStop(client, humidityFsm, deviceIds);
       }
 
       res.status(200).json({ action: decision, humidity: avgHumidity });

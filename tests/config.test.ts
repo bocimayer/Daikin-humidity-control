@@ -12,8 +12,6 @@ const VALID_ENV: Record<string, string> = {
   DAIKIN_CLIENT_ID: 'test-client-id',
   DAIKIN_CLIENT_SECRET: 'test-client-secret',
   DAIKIN_REFRESH_TOKEN: 'test-refresh-token',
-  DAIKIN_DEVICE_IDS_JSON: '["device-1","device-2"]',
-  DAIKIN_HUMIDITY_LEADER_IDS_JSON: '["device-1"]',
   EXPECTED_AUDIENCE: 'https://my-service-abc-uc.a.run.app',
 };
 
@@ -52,16 +50,6 @@ async function loadConfig(): Promise<typeof import('../src/config')> {
 
 describe('config — valid environment', () => {
   beforeEach(() => setEnv({}));
-
-  it('parses device IDs from JSON', async () => {
-    const { config } = await loadConfig();
-    expect(config.daikin.deviceIds).toEqual(['device-1', 'device-2']);
-  });
-
-  it('parses humidity leader IDs from JSON', async () => {
-    const { config } = await loadConfig();
-    expect(config.daikin.humidityLeaderIds).toEqual(['device-1']);
-  });
 
   it('uses default port 8080', async () => {
     const { config } = await loadConfig();
@@ -146,24 +134,6 @@ describe('config — missing required fields', () => {
     await expect(loadConfig()).rejects.toThrow(/EXPECTED_AUDIENCE/);
   });
 
-  it('throws when DAIKIN_DEVICE_IDS_JSON is missing', async () => {
-    setEnv({ DAIKIN_DEVICE_IDS_JSON: undefined });
-    await expect(loadConfig()).rejects.toThrow();
-  });
-});
-
-// ── Malformed JSON ────────────────────────────────────────────────────────────
-
-describe('config — malformed JSON fields', () => {
-  it('throws when DAIKIN_DEVICE_IDS_JSON is not valid JSON', async () => {
-    setEnv({ DAIKIN_DEVICE_IDS_JSON: 'not-json' });
-    await expect(loadConfig()).rejects.toThrow();
-  });
-
-  it('throws when DAIKIN_DEVICE_IDS_JSON is a JSON object instead of an array', async () => {
-    setEnv({ DAIKIN_DEVICE_IDS_JSON: '{"id":"x"}' });
-    await expect(loadConfig()).rejects.toThrow();
-  });
 });
 
 // ── Hysteresis validation ─────────────────────────────────────────────────────
