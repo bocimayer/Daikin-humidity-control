@@ -25,8 +25,6 @@ env:
   #   GCP_WORKLOAD_IDENTITY_PROVIDER    projects/PROJECT_NUMBER/locations/global/workloadIdentityPools/POOL/providers/PROVIDER
   #   GCP_DEPLOY_SA                     deploy-sa@my-gcp-project-123.iam.gserviceaccount.com
   # Cloud Run runtime SA id must match GCP (default: daikin-runtime-sa; see setup/bootstrap.sh).
-  #   DAIKIN_DEVICE_IDS_JSON            ["uuid-1","uuid-2"]
-  #   DAIKIN_HUMIDITY_LEADER_IDS_JSON   ["uuid-1"]
   # Optional secrets (override runtime behaviour):
   #   HEAT_TARGET_TEMP_C                default: 16
   #   HUMIDITY_HIGH_THRESHOLD           default: 70
@@ -103,12 +101,9 @@ jobs:
           echo "IMAGE_TAG=$TAG" >> "$GITHUB_ENV"
 
       # ── Deploy to Cloud Run ────────────────────────────────────────────────
-      # JSON secrets (e.g. DAIKIN_DEVICE_IDS_JSON) contain commas; --set-env-vars
-      # is comma-separated and breaks on raw JSON. Use --env-vars-file (YAML).
+      # Runtime env is YAML (avoids comma issues in gcloud --set-env-vars).
       - name: Deploy to Cloud Run
         env:
-          DAIKIN_DEVICE_IDS_JSON: ${{ secrets.DAIKIN_DEVICE_IDS_JSON }}
-          DAIKIN_HUMIDITY_LEADER_IDS_JSON: ${{ secrets.DAIKIN_HUMIDITY_LEADER_IDS_JSON }}
           HEAT_TARGET_TEMP_C: ${{ secrets.HEAT_TARGET_TEMP_C || '16' }}
           HUMIDITY_HIGH_THRESHOLD: ${{ secrets.HUMIDITY_HIGH_THRESHOLD || '70' }}
           HUMIDITY_LOW_THRESHOLD: ${{ secrets.HUMIDITY_LOW_THRESHOLD || '60' }}
@@ -142,8 +137,6 @@ jobs:
               ("DAIKIN_FIRESTORE_COLLECTION", "oauth_tokens"),
               ("DAIKIN_FIRESTORE_DOCUMENT", "daikin_onecta"),
               ("EXPECTED_AUDIENCE", os.environ["EXPECTED_AUDIENCE"]),
-              ("DAIKIN_DEVICE_IDS_JSON", os.environ["DAIKIN_DEVICE_IDS_JSON"]),
-              ("DAIKIN_HUMIDITY_LEADER_IDS_JSON", os.environ["DAIKIN_HUMIDITY_LEADER_IDS_JSON"]),
               ("HEAT_TARGET_TEMP_C", os.environ["HEAT_TARGET_TEMP_C"]),
               ("HUMIDITY_HIGH_THRESHOLD", os.environ["HUMIDITY_HIGH_THRESHOLD"]),
               ("HUMIDITY_LOW_THRESHOLD", os.environ["HUMIDITY_LOW_THRESHOLD"]),
