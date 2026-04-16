@@ -123,9 +123,9 @@ jobs:
           EXISTING_URL=$(gcloud run services describe ${{ env.SERVICE_NAME }} \
             --region="${{ secrets.GCP_REGION }}" \
             --format="value(status.url)" \
-            --project="${{ secrets.GCP_PROJECT_ID }}" 2>/dev/null || true)
+            --project="${{ secrets.GCP_PROJECT_ID }}" 2>/dev/null | xargs || true)
           if [ -n "${EXISTING_URL}" ]; then
-            EXPECTED_AUDIENCE="${EXISTING_URL}"
+            EXPECTED_AUDIENCE="${EXISTING_URL%/}"
           else
             EXPECTED_AUDIENCE="https://cloud-run-audience-bootstrap.invalid"
           fi
@@ -172,7 +172,8 @@ jobs:
           REAL_URL=$(gcloud run services describe ${{ env.SERVICE_NAME }} \
             --region="${{ secrets.GCP_REGION }}" \
             --format="value(status.url)" \
-            --project="${{ secrets.GCP_PROJECT_ID }}")
+            --project="${{ secrets.GCP_PROJECT_ID }}" | xargs)
+          REAL_URL="${REAL_URL%/}"
           echo "SERVICE_URL=${REAL_URL}" >> "$GITHUB_ENV"
           echo "Cloud Run URL: ${REAL_URL}"
           if [ "${DEPLOY_EXPECTED_AUDIENCE}" != "${REAL_URL}" ]; then
@@ -189,6 +190,9 @@ jobs:
         env:
           GCP_DEPLOY_SA: ${{ secrets.GCP_DEPLOY_SA }}
         run: |
+          # Avoid https://host//healthz (double slash) if SERVICE_URL had a trailing slash.
+          BASE_URL="${SERVICE_URL%/}"
+          export BASE_URL
           TOKEN=$(python3 <<'PY'
           import json
           import os
@@ -198,7 +202,7 @@ jobs:
 
           access = os.popen("gcloud auth print-access-token").read().strip()
           sa = os.environ["GCP_DEPLOY_SA"]
-          aud = os.environ["SERVICE_URL"]
+          aud = os.environ["BASE_URL"].rstrip("/")
           enc = urllib.parse.quote(sa, safe="")
           url = f"https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/{enc}:generateIdToken"
           body = json.dumps({"audience": aud, "includeEmail": True}).encode("utf-8")
@@ -214,9 +218,10 @@ jobs:
           )
           HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
             -H "Authorization: Bearer ${TOKEN}" \
-            "${SERVICE_URL}/healthz")
+            "${BASE_URL}/healthz")
           if [ "$HTTP_STATUS" != "200" ]; then
-            echo "Health check failed with HTTP $HTTP_STATUS"
+            echo "Health check failed with HTTP $HTTP_STATUS (BASE_URL=${BASE_URL})"
+            curl -sS -H "Authorization: Bearer ${TOKEN}" "${BASE_URL}/healthz" || true
             exit 1
           fi
           echo "Health check passed (HTTP $HTTP_STATUS)"
