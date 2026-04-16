@@ -185,12 +185,13 @@ jobs:
           fi
 
       # ── Smoke test (private URL: OIDC token, audience = SERVICE_URL) ────────
-      # Requires deploy SA to have roles/iam.serviceAccountTokenCreator on itself.
-      - name: Smoke test /healthz
+      # Requires deploy SA: roles/iam.serviceAccountTokenCreator (on itself) + roles/run.invoker (on this service).
+      # Use /health not /healthz — Cloud Run's edge returns HTML 404 for /healthz before the container.
+      - name: Smoke test /health
         env:
           GCP_DEPLOY_SA: ${{ secrets.GCP_DEPLOY_SA }}
         run: |
-          # Avoid https://host//healthz (double slash) if SERVICE_URL had a trailing slash.
+          # Avoid https://host//health (double slash) if SERVICE_URL had a trailing slash.
           BASE_URL="${SERVICE_URL%/}"
           export BASE_URL
           TOKEN=$(python3 <<'PY'
@@ -218,10 +219,10 @@ jobs:
           )
           HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
             -H "Authorization: Bearer ${TOKEN}" \
-            "${BASE_URL}/healthz")
+            "${BASE_URL}/health")
           if [ "$HTTP_STATUS" != "200" ]; then
             echo "Health check failed with HTTP $HTTP_STATUS (BASE_URL=${BASE_URL})"
-            curl -sS -H "Authorization: Bearer ${TOKEN}" "${BASE_URL}/healthz" || true
+            curl -sS -H "Authorization: Bearer ${TOKEN}" "${BASE_URL}/health" || true
             exit 1
           fi
           echo "Health check passed (HTTP $HTTP_STATUS)"

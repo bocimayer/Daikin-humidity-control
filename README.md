@@ -19,7 +19,7 @@ Cloud Run  (private — no public access)
        ├─ POST /tasks/dry-start       ← switch all units to DRY
        ├─ POST /tasks/dry-stop        ← switch all units back to HEAT + setpoint
        ├─ POST /tasks/check-humidity  ← read humidity, decide via hysteresis FSM
-       └─ GET  /healthz               ← liveness probe
+       └─ GET  /health                ← liveness probe (not /healthz on Cloud Run — see routes.ts)
 
   Internal modules
   ├─ DaikinClient   — Onecta OAuth2 + device ops (token refresh, retry, backoff)
@@ -134,7 +134,7 @@ npm run daikin:oauth-exchange -- '<code>'
 npm run dev
 
 # 5. Test endpoints
-curl http://localhost:8080/healthz
+curl http://localhost:8080/health
 curl -X POST http://localhost:8080/tasks/dry-stop
 curl -X POST http://localhost:8080/tasks/check-humidity
 ```
@@ -184,7 +184,7 @@ docker run --rm -p 8080:8080 \
   --env-file .env \
   daikin-humidity-control
 
-curl http://localhost:8080/healthz
+curl http://localhost:8080/health
 ```
 
 ---
@@ -255,7 +255,7 @@ Once secrets are set, push to `main`:
 git push origin main
 ```
 
-The pipeline runs tests first; if they pass it builds the image, pushes to Artifact Registry, deploys to Cloud Run, and runs a `/healthz` smoke test. The job summary shows the deployed URL.
+The pipeline runs tests first; if they pass it builds the image, pushes to Artifact Registry, deploys to Cloud Run, and runs a `/health` smoke test. The job summary shows the deployed URL.
 
 For a manual trigger: **Actions → Deploy to Cloud Run → Run workflow**.
 

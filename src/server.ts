@@ -50,7 +50,7 @@ const app = express();
 app.use(express.json());
 
 // Protect all task endpoints with OIDC verification.
-// /healthz is intentionally left open — Cloud Run health checks need it.
+// Task routes use OIDC; GET /health is unauthenticated (see routes.ts — avoid /healthz on Cloud Run).
 app.use('/tasks', requireSchedulerAuth);
 
 // Mount all routes.

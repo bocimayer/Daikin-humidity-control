@@ -98,8 +98,10 @@ export function createRouter(
 ): Router {
   const router = Router();
 
-  // ── GET /healthz ────────────────────────────────────────────────────────────
-  router.get('/healthz', (_req: Request, res: Response) => {
+  // ── GET /health ─────────────────────────────────────────────────────────────
+  // Do not use /healthz on Cloud Run: the Google front end intercepts that path and
+  // returns a generic HTML 404 before the request reaches this container (even with OIDC).
+  router.get('/health', (_req: Request, res: Response) => {
     res.status(200).json({ status: 'ok', ts: new Date().toISOString() });
   });
 

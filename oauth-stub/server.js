@@ -2,7 +2,7 @@
  * Minimal Cloud Run stub: same surface we rely on for Daikin OAuth (public HTTPS).
  *
  * Cross-references:
- *   - Main app routes: ../src/routes.ts (GET /healthz)
+ *   - Main app routes: ../src/routes.ts (GET /health)
  *   - OAuth onboarding: ../README.md (authorization code flow)
  *   - Deploy: ../.github/workflows/deploy-oauth-stub.yml, ../setup/deploy-oauth-stub.sh
  */
@@ -69,7 +69,7 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  if (fullUrl.pathname === '/healthz') {
+  if (fullUrl.pathname === '/health') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ status: 'ok', service: 'daikin-oauth-stub', ts: new Date().toISOString() }));
     return;
