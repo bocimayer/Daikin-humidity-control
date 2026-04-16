@@ -21,6 +21,9 @@ Thumbs.db
 .vscode/
 .idea/
 
+# Cursor local history (do not commit)
+.specstory/
+
 # Test coverage
 coverage/
 setup/token-helper/node_modules/

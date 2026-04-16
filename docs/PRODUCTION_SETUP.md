@@ -58,7 +58,16 @@ From a machine with `gcloud` and owner permissions on the project:
 
 1. Push to `main` (or run Actions manually): **Deploy to Cloud Run** → `daikin-humidity-control`.  
 2. Deploy **Deploy OAuth stub (Cloud Run)** so the redirect URI exists.  
-3. In the Daikin developer portal, register **`https://<oauth-stub-url>/oauth/callback`** as redirect URI (exact string).
+3. In the Daikin developer portal, register the **exact** HTTPS callback below as redirect URI (must match character-for-character).
+
+**Production stub (last verified via `gcloud run services describe`; re-check after redeploy):**
+
+- Service URL: `https://daikin-oauth-stub-gt3duizjrq-lm.a.run.app`  
+- **Redirect URI to register in Daikin portal:** `https://daikin-oauth-stub-gt3duizjrq-lm.a.run.app/oauth/callback`
+
+**Verify stub health:** `curl` (or browser) `https://daikin-oauth-stub-gt3duizjrq-lm.a.run.app/health` → JSON `status":"ok"`.
+
+**Portal:** operator must confirm the Daikin app lists the same callback URL (the agent cannot read the Daikin portal).
 
 ---
 
@@ -105,9 +114,30 @@ On a trusted machine (or Cloud Shell with ADC):
 
 ## Phase F — Prove Cloud Run task endpoints (manual)
 
-With a valid **OIDC** token (Scheduler SA or `gcloud auth print-identity-token` with audience = main service URL), `POST` the task routes (`/tasks/dry-start`, etc.) against the **private** service URL. Confirm logs and device behaviour.
+With a valid **OIDC** token whose **audience** is the **main** Cloud Run service URL (same string as `EXPECTED_AUDIENCE` on the service), `POST` the task routes (`/tasks/dry-start`, `/tasks/dry-stop`, etc.) against the **private** service URL. Expect **HTTP 200** (or a structured JSON skip), not **403**.
 
-**Only after** Phase D–F pass: proceed to Scheduler.
+### F1 — Same pattern as CI (`generateIdToken` for the deploy SA)
+
+The deploy workflow uses **`gcloud auth print-access-token`** (caller credentials) then **`iamcredentials.googleapis.com` … `generateIdToken`** for **`GCP_DEPLOY_SA`** with `audience` = service URL. Replicate locally with [scripts/generate-cloud-run-id-token.py](scripts/generate-cloud-run-id-token.py) (requires **`gcloud`** on `PATH`; on Windows the script resolves `gcloud.cmd`).
+
+**PowerShell (from repo root)** — replace `BASE_URL` with your live service URL from `gcloud run services describe`:
+
+```powershell
+$BASE = "https://daikin-humidity-control-REPLACE.a.run.app"
+$SA   = "daikin-deploy-sa@YOUR_PROJECT_ID.iam.gserviceaccount.com"
+python scripts/generate-cloud-run-id-token.py $SA $BASE | Set-Content -Path "$env:TEMP\cr_oidc.txt" -Encoding ascii -NoNewline
+curl.exe -s -w "HTTP %{http_code}\n" -X POST -H "Authorization: Bearer $(Get-Content -Raw $env:TEMP\cr_oidc.txt)" -H "Content-Length: 0" "$BASE/tasks/dry-stop"
+```
+
+Use **`/tasks/dry-stop`** first (reverts toward safe HEAT setpoint). Remove `cr_oidc.txt` after use.
+
+**If `generateIdToken` returns HTTP 403** with `iam.serviceAccounts.getOpenIdToken` denied: your user (or ADC account) is not allowed to mint ID tokens **as** the deploy SA. Fix by granting your principal **`roles/iam.serviceAccountTokenCreator`** on **`daikin-deploy-sa`** (resource-level), or run the curl from an identity that already has that right (e.g. the same automation account CI uses).
+
+### F2 — Indirect proof via Cloud Scheduler (after Phase G)
+
+After jobs exist, **`gcloud scheduler jobs run daikin-dry-stop --location=REGION --project=PROJECT`** issues a real **OIDC** `POST` with audience = service URL. A **200** in Cloud Run logs for `/tasks/dry-stop` satisfies the same gate if F1 is blocked by local IAM.
+
+**Only after** Phase D–F pass (or F2 after G): treat task auth as proven.
 
 ---
 
