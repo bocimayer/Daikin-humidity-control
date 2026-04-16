@@ -153,6 +153,9 @@ Required role:
 
 Used by the running app itself.
 
+GitHub Actions deploy workflows run both services as **`daikin-runtime-sa@PROJECT_ID.iam.gserviceaccount.com`**
+(`setup/bootstrap.sh` creates this account and grants the access below).
+
 Required access:
 
 - Secret Manager read access for:
@@ -164,13 +167,22 @@ Suggested role:
 
 - `roles/datastore.user`
 
-Recommendation:
+---
 
-- use a dedicated runtime service account instead of the default compute service account
+## CI smoke test IAM (deploy service account)
+
+The deploy workflow calls `generateIdToken` and `curl`s private Cloud Run. That needs:
+
+- `roles/iam.serviceAccountTokenCreator` on **itself** for `daikin-deploy-sa`
+- `roles/run.invoker` on `daikin-humidity-control` for `daikin-deploy-sa`
+
+These are **not** created by the original bootstrap loop; add them if smoke tests fail with IAM errors.
 
 ---
 
 ## Required GitHub Actions Secrets
+
+Configure these on the GitHub **Environment** `gcp` (see `.github/workflows/deploy.yml`).
 
 At minimum:
 
@@ -178,8 +190,6 @@ At minimum:
 - `GCP_REGION`
 - `GCP_WORKLOAD_IDENTITY_PROVIDER`
 - `GCP_DEPLOY_SA`
-- `DAIKIN_DEVICE_IDS_JSON`
-- `DAIKIN_HUMIDITY_LEADER_IDS_JSON`
 
 Optional runtime tuning:
 
@@ -201,8 +211,6 @@ NODE_ENV=production
 DAIKIN_TOKEN_STORE=firestore
 DAIKIN_FIRESTORE_COLLECTION=oauth_tokens
 DAIKIN_FIRESTORE_DOCUMENT=daikin_onecta
-DAIKIN_DEVICE_IDS_JSON=[...]
-DAIKIN_HUMIDITY_LEADER_IDS_JSON=[...]
 HEAT_TARGET_TEMP_C=16
 HUMIDITY_HIGH_THRESHOLD=70
 HUMIDITY_LOW_THRESHOLD=60
@@ -298,7 +306,7 @@ After deployment, verify all of these:
 
 ### Daikin integration
 
-- list devices works
+- `GET /v1/gateway-devices` works from Cloud Run (device set is dynamic — no env JSON list)
 - read device state works
 - write one reversible control action works
 - a fresh Cloud Run instance still works after a token refresh
@@ -349,10 +357,13 @@ The documented bootstrap path works, but it is still driven by the OAuth helper
 scripts plus operator-supplied Firestore settings. There is no dedicated
 production bootstrap helper yet.
 
-### 3. Dedicated runtime service account is still recommended
+### 3. Docs vs bootstrap drift (historical)
 
-The current setup can work with the default compute runtime identity, but a
-dedicated Cloud Run runtime service account would be cleaner and easier to audit.
+GitHub Actions deploys Cloud Run with runtime identity **`daikin-runtime-sa`**
+(see workflows). Older copies of `setup/bootstrap.sh` granted Secret Manager /
+Firestore roles to the **default compute** service account. If you used an old
+bootstrap, re-check IAM on **`daikin-runtime-sa`** matches `README.md` / GCP
+console. Canonical operator checklist: `docs/PRODUCTION_SETUP.md`.
 
 ---
 
@@ -375,5 +386,6 @@ This is production-ready when all of the following are true:
 
 1. Add a production bootstrap helper that writes the first refresh token into Firestore.
 2. Add a post-deploy verification step that confirms Firestore token read/write works.
-3. Introduce a dedicated Cloud Run runtime service account.
-4. Write a short runbook for production re-auth and token recovery.
+3. Write a short runbook for production re-auth and token recovery.
+
+Operator checklist: **`docs/PRODUCTION_SETUP.md`**.

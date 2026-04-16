@@ -6,9 +6,13 @@ with **no local hardware**. Deployed on Google Cloud Run, triggered by Cloud
 Scheduler, with static credentials in Secret Manager and the rotating production
 refresh token in Firestore.
 
+**OAuth stub (`daikin-oauth-stub`):** Daikin’s portal requires a **non-localhost** HTTPS redirect URI for the browser login. The small public Cloud Run app under `oauth-stub/` hosts `/oauth/callback` so `DAIKIN_REDIRECT_URI` can point there during onboarding. It is **not** the humidity-control service; see `docs/PRODUCTION_SETUP.md`.
+
 ---
 
 ## Architecture
+
+**Production checklist:** `docs/PRODUCTION_SETUP.md` (ordered gates: GitHub env → GCP → deploy → Firestore token → live tests → Scheduler).
 
 ```
 Cloud Scheduler
@@ -37,8 +41,8 @@ Secrets/state:
 | Scenario | Calls/day |
 |---|---|
 | Option A, 4 devices, 1 cycle | ~10 |
-| Option B, 1 leader, 2 devices, 8 polls | ~18 |
-| Option B, 3 leaders, 4 devices, 8 polls | ~32 |
+| Option B, 2 devices, 8 polls | ~18 |
+| Option B, 4 devices, 8 polls | ~24 |
 
 Poll no more than every 3 hours with humidity strategy to stay safe.
 
@@ -88,8 +92,6 @@ Set `MODE_STRATEGY=humidity`.
 | `DAIKIN_TOKEN_FILE_PATH` | no | OS-specific app-data path | Local development token file path |
 | `DAIKIN_FIRESTORE_COLLECTION` | no | `oauth_tokens` | Firestore collection for the latest rotating refresh token |
 | `DAIKIN_FIRESTORE_DOCUMENT` | no | `daikin_onecta` | Firestore document id for the latest rotating refresh token |
-| `DAIKIN_DEVICE_IDS_JSON` | **yes** | — | JSON array of device UUIDs to control |
-| `DAIKIN_HUMIDITY_LEADER_IDS_JSON` | **yes** | — | JSON array of device UUIDs to read humidity from |
 | `DRY_DURATION_MINUTES` | no | `120` | Informational — used to space Scheduler jobs |
 | `HEAT_TARGET_TEMP_C` | no | `16` | Frost-protection setpoint after dry cycle |
 | `HUMIDITY_HIGH_THRESHOLD` | no | `70` | % RH at which dry cycle starts |
@@ -97,6 +99,8 @@ Set `MODE_STRATEGY=humidity`.
 | `MODE_STRATEGY` | no | `timer` | `timer` or `humidity` |
 | `LOG_LEVEL` | no | `info` | `trace` `debug` `info` `warn` `error` `fatal` |
 | `EXPECTED_AUDIENCE` | **yes** | — | Cloud Run service URL (OIDC audience check) |
+
+**Gateway devices:** the service does **not** take device UUIDs from env. On each task it calls Onecta `GET /v1/gateway-devices` and uses **every** returned device for dry-start/stop and for humidity reads (null humidity on a unit is skipped). See `src/device-ids.ts` and `docs/PRODUCTION_SETUP.md`.
 
 ### OAuth helper variables
 
@@ -121,7 +125,7 @@ These are used by the local onboarding scripts, not by the main runtime server:
 ```bash
 # 1. Copy env file and fill in values
 cp .env.example .env
-# Edit .env — set static DAIKIN_* credentials, token-store settings, and real device IDs
+# Edit .env — set static DAIKIN_* credentials and token-store settings
 
 # 2. Install dependencies
 npm install
@@ -148,6 +152,7 @@ npm test              # run all tests (offline unit tests only)
 npm run test:coverage # with coverage report
 npm run test:onnecta  # live Daikin Onecta: list devices, read state, reversible setpoint PATCH (needs valid .env)
 npm run daikin:live-smoke   # same flow as a CLI script (optional: device id, --raw)
+npm run daikin:seed-firestore-from-local  # copy local refresh-token.json → Firestore (needs GOOGLE_CLOUD_PROJECT + ADC); see docs/PRODUCTION_SETUP.md
 ```
 
 `test:onnecta` sets `DAIKIN_INTEGRATION_TEST=1` via `cross-env`. If the token store is empty or expired, run the browser OAuth flow and `npm run daikin:oauth-exchange` once to bootstrap it again.
@@ -158,6 +163,7 @@ Unit test suites (default `npm test`):
 - `tests/hysteresis.test.ts` — HumidityStateMachine transitions
 - `tests/idempotency.test.ts` — IdempotencyGuard allow/block/reset
 - `tests/config.test.ts` — Zod schema validation and defaults
+- `tests/device-ids.test.ts` — gateway device list helper
 
 Live API (separate Jest config, `npm run test:onnecta`):
 - `tests/daikin-onecta.integration.test.ts` — real Onecta list / read / write
@@ -225,7 +231,7 @@ The script:
 
 ### GitHub secrets to configure
 
-After running bootstrap.sh, go to **Settings → Secrets and variables → Actions** and add:
+After running bootstrap.sh, add the printed secrets to the GitHub **Environment** named **`gcp`** (the deploy workflows use `environment: gcp`), or mirror the same names as repository Actions secrets if you choose not to use environments.
 
 | Secret | Example value |
 |---|---|
@@ -233,8 +239,6 @@ After running bootstrap.sh, go to **Settings → Secrets and variables → Actio
 | `GCP_REGION` | `europe-central2` |
 | `GCP_DEPLOY_SA` | `daikin-deploy-sa@my-gcp-project-123.iam.gserviceaccount.com` |
 | `GCP_WORKLOAD_IDENTITY_PROVIDER` | `projects/123456/locations/global/workloadIdentityPools/github-pool/providers/github-provider` |
-| `DAIKIN_DEVICE_IDS_JSON` | `["uuid-1","uuid-2"]` |
-| `DAIKIN_HUMIDITY_LEADER_IDS_JSON` | `["uuid-1"]` |
 | `HEAT_TARGET_TEMP_C` *(optional)* | `16` |
 | `HUMIDITY_HIGH_THRESHOLD` *(optional)* | `70` |
 | `HUMIDITY_LOW_THRESHOLD` *(optional)* | `60` |
@@ -318,8 +322,8 @@ Grant the Cloud Run runtime service account access to read them
 (replace `PROJECT_NUMBER` with your actual project number):
 
 ```bash
-export PROJECT_NUMBER=$(gcloud projects describe $PROJECT_ID --format='value(projectNumber)')
-export RUN_SA="${PROJECT_NUMBER}-compute@developer.gserviceaccount.com"
+# Must match the service account used by Cloud Run (see deploy workflows): daikin-runtime-sa
+export RUN_SA="daikin-runtime-sa@${PROJECT_ID}.iam.gserviceaccount.com"
 
 for SECRET in DAIKIN_CLIENT_ID DAIKIN_CLIENT_SECRET; do
   gcloud secrets add-iam-policy-binding $SECRET \
@@ -349,8 +353,6 @@ gcloud run deploy $SERVICE_NAME \
   --platform=managed \
   --no-allow-unauthenticated \
   --set-env-vars="NODE_ENV=production,\
-DAIKIN_DEVICE_IDS_JSON=[\"device-uuid-1\",\"device-uuid-2\"],\
-DAIKIN_HUMIDITY_LEADER_IDS_JSON=[\"device-uuid-1\"],\
 HEAT_TARGET_TEMP_C=16,\
 HUMIDITY_HIGH_THRESHOLD=70,\
 HUMIDITY_LOW_THRESHOLD=60,\
@@ -480,13 +482,14 @@ The Daikin Onecta private developer app allows **≈200 API calls/day**.
 
 Each call type costs:
 - Token refresh: 1 call (cached for ~1 h, only refreshed when needed)
-- `getDeviceState` per leader: 1 call
+- `getDevices` list: 1 call per task that resolves devices (dry-start/stop/check-humidity each call Onecta once up front)
+- `getDeviceState` per gateway device: 1 call (humidity mode reads every listed device)
 - `setOperationMode` per device: 1 call
 - `setTemperature` per device: 1 call
 
 **Conservative rules:**
 - In **humidity mode**: poll no more than every 2–3 hours (8 polls/day).
-  - With 2 leader devices and 4 controlled devices: 8×2 + 2×6 = 28 calls/day
+  - With 4 devices: list (1) + 4×state reads per poll ≈ 5 calls per poll; 8 polls/day ≈ 40 calls/day before any dry actions (re-tune schedule if tight on quota)
 - In **timer mode**: 2 PATCH calls × number of devices per cycle.
   - With 4 devices: 2×4×2 = 16 calls/day
 - Always set `DRY_DURATION_MINUTES` generously so one long cycle beats several short ones.
