@@ -292,7 +292,7 @@ After deployment, verify all of these:
 
 - `daikin-humidity-control` is deployed successfully
 - `EXPECTED_AUDIENCE` matches the real Cloud Run URL
-- `/healthz` returns `200`
+- `GET /health` returns `200` (avoid `/healthz` on Cloud Run — Google's edge returns HTML 404 for that path)
 - private `/tasks/*` endpoints reject unauthenticated traffic
 - scheduler OIDC calls are accepted
 
