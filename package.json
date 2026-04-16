@@ -14,6 +14,7 @@
     "daikin:oauth-url": "node setup/oauth-onboarding/onecta-oauth-setup.js authorize-url",
     "daikin:oauth-exchange": "node setup/oauth-onboarding/onecta-oauth-setup.js exchange",
     "daikin:live-smoke": "ts-node scripts/daikin-live-smoke.ts",
+    "daikin:seed-firestore-from-local": "node scripts/seed-firestore-refresh-from-local.js",
     "daikin:access-token": "node setup/oauth-onboarding/get-access-token.js"
   },
   "engines": {

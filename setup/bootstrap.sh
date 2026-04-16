@@ -30,6 +30,7 @@ set -euo pipefail
 SERVICE_NAME="daikin-humidity-control"
 DEPLOY_SA_NAME="daikin-deploy-sa"
 SCHEDULER_SA_NAME="daikin-scheduler-sa"
+RUNTIME_SA_NAME="daikin-runtime-sa"
 AR_REPO="daikin"
 WIF_POOL="github-pool"
 WIF_PROVIDER="github-provider"
@@ -37,7 +38,7 @@ WIF_PROVIDER="github-provider"
 PROJECT_NUMBER=$(gcloud projects describe "$PROJECT_ID" --format="value(projectNumber)")
 DEPLOY_SA="${DEPLOY_SA_NAME}@${PROJECT_ID}.iam.gserviceaccount.com"
 SCHEDULER_SA="${SCHEDULER_SA_NAME}@${PROJECT_ID}.iam.gserviceaccount.com"
-RUNTIME_SA="${PROJECT_NUMBER}-compute@developer.gserviceaccount.com"
+RUNTIME_SA="${RUNTIME_SA_NAME}@${PROJECT_ID}.iam.gserviceaccount.com"
 
 echo "=== Daikin Humidity Control — GCP Bootstrap ==="
 echo "Project:   $PROJECT_ID  ($PROJECT_NUMBER)"
@@ -93,6 +94,17 @@ else
     --display-name="Daikin Scheduler Invoker" \
     --project="$PROJECT_ID"
   echo "    Service account '${SCHEDULER_SA}' created."
+fi
+
+# Dedicated runtime identity for Cloud Run (must match .github/workflows/deploy*.yml).
+echo "--- [4b/9] Creating Cloud Run runtime service account..."
+if gcloud iam service-accounts describe "$RUNTIME_SA" --project="$PROJECT_ID" &>/dev/null; then
+  echo "    Service account '${RUNTIME_SA}' already exists — skipping."
+else
+  gcloud iam service-accounts create "$RUNTIME_SA_NAME" \
+    --display-name="Daikin Cloud Run Runtime" \
+    --project="$PROJECT_ID"
+  echo "    Service account '${RUNTIME_SA}' created."
 fi
 
 # ── 5. IAM roles for deploy SA ────────────────────────────────────────────────
@@ -204,8 +216,8 @@ echo "    Workload Identity binding set."
 echo ""
 echo "--- [9/9] GitHub Actions secrets to add"
 echo ""
-echo "Go to: https://github.com/${GITHUB_ORG}/${GITHUB_REPO}/settings/secrets/actions"
-echo "Add the following secrets:"
+echo "Add the following as secrets on the GitHub Environment named \"gcp\""
+echo "(repo: https://github.com/${GITHUB_ORG}/${GITHUB_REPO}/settings/environments):"
 echo ""
 
 WIF_PROVIDER_RESOURCE="${WIF_POOL_RESOURCE}/providers/${WIF_PROVIDER}"
@@ -213,10 +225,6 @@ echo "  GCP_PROJECT_ID                  = ${PROJECT_ID}"
 echo "  GCP_REGION                      = ${REGION}"
 echo "  GCP_DEPLOY_SA                   = ${DEPLOY_SA}"
 echo "  GCP_WORKLOAD_IDENTITY_PROVIDER  = ${WIF_PROVIDER_RESOURCE}"
-echo ""
-echo "  # Device configuration (JSON arrays):"
-echo "  DAIKIN_DEVICE_IDS_JSON          = [\"<uuid-1>\",\"<uuid-2>\"]"
-echo "  DAIKIN_HUMIDITY_LEADER_IDS_JSON = [\"<uuid-1>\"]"
 echo ""
 echo "  # Optional (defaults shown):"
 echo "  HEAT_TARGET_TEMP_C              = 16"

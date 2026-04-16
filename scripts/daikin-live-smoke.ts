@@ -3,6 +3,7 @@
  *
  * Cross-references:
  *   - API client: ../src/daikin.ts
+ *   - Gateway list (same source as Cloud Run tasks): ../src/device-ids.ts
  *   - Run: npm run daikin:live-smoke [-- <deviceId>]
  *
  * Steps: list gateway devices → read each device state → optional reversible
