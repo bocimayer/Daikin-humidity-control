@@ -183,21 +183,43 @@ jobs:
               --project="${{ secrets.GCP_PROJECT_ID }}"
           fi
 
-      # ── Smoke test ─────────────────────────────────────────────────────────
-      # Private Cloud Run needs an OIDC token (audience = service URL). Minting that
-      # requires iam.serviceAccounts.getOpenIdToken on the deploy SA; skip HTTP curl here
-      # unless that binding exists — revision readiness still proves the container started.
-      - name: Verify latest revision is ready
+      # ── Smoke test (private URL: OIDC token, audience = SERVICE_URL) ────────
+      # Requires deploy SA to have roles/iam.serviceAccountTokenCreator on itself.
+      - name: Smoke test /healthz
+        env:
+          GCP_DEPLOY_SA: ${{ secrets.GCP_DEPLOY_SA }}
         run: |
-          REVISION=$(gcloud run services describe ${{ env.SERVICE_NAME }} \
-            --region="${{ secrets.GCP_REGION }}" \
-            --project="${{ secrets.GCP_PROJECT_ID }}" \
-            --format="value(status.latestReadyRevisionName)")
-          if [ -z "${REVISION}" ]; then
-            echo "::error::No ready revision for ${{ env.SERVICE_NAME }}"
+          TOKEN=$(python3 <<'PY'
+          import json
+          import os
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+
+          access = os.popen("gcloud auth print-access-token").read().strip()
+          sa = os.environ["GCP_DEPLOY_SA"]
+          aud = os.environ["SERVICE_URL"]
+          enc = urllib.parse.quote(sa, safe="")
+          url = f"https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/{enc}:generateIdToken"
+          body = json.dumps({"audience": aud, "includeEmail": True}).encode("utf-8")
+          req = urllib.request.Request(url, data=body, method="POST")
+          req.add_header("Authorization", f"Bearer {access}")
+          req.add_header("Content-Type", "application/json; charset=utf-8")
+          try:
+              with urllib.request.urlopen(req) as resp:
+                  print(json.load(resp)["token"])
+          except urllib.error.HTTPError as e:
+              raise SystemExit(f"generateIdToken failed HTTP {e.code}: {e.read().decode()!r}") from e
+          PY
+          )
+          HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+            -H "Authorization: Bearer ${TOKEN}" \
+            "${SERVICE_URL}/healthz")
+          if [ "$HTTP_STATUS" != "200" ]; then
+            echo "Health check failed with HTTP $HTTP_STATUS"
             exit 1
           fi
-          echo "Ready revision: ${REVISION}"
+          echo "Health check passed (HTTP $HTTP_STATUS)"
 
       - name: Deployment summary
         run: |
