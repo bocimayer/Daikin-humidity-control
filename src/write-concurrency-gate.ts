@@ -1,6 +1,7 @@
 /**
- * Limits how many async Onecta write operations run at once (PATCH burst → 429).
- * Used by DaikinClient for all characteristic PATCHes. Cross-ref: daikin.ts.
+ * Limits concurrent calls to the Onecta gateway HTTP API (GET + PATCH on this.http).
+ * Daikin rate limits hit on parallel device reads as well as writes; this gate applies to both.
+ * Cross-ref: daikin.ts (DAIKIN_WRITE_CONCURRENCY / config.daikin.writeConcurrency).
  */
 
 export class WriteConcurrencyGate {
@@ -13,7 +14,7 @@ export class WriteConcurrencyGate {
     }
   }
 
-  /** Run fn while holding one write slot; order is FIFO under the concurrency cap. */
+  /** Run fn while holding one slot; order is FIFO under the concurrency cap. */
   async run<T>(fn: () => Promise<T>): Promise<T> {
     await this.acquire();
     try {

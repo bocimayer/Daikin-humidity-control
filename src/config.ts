@@ -96,7 +96,7 @@ export type AppConfig = {
       firestoreCollection: string;
       firestoreDocument: string;
     };
-    /** Cap concurrent Onecta PATCH calls (default 1). */
+    /** Cap concurrent Onecta gateway HTTP calls on this.http: GET + PATCH (default 1). */
     writeConcurrency: number;
   };
   dryDurationMinutes: number;

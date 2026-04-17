@@ -201,7 +201,8 @@ function getCharacteristicFromMp(
 export class DaikinClient {
   private readonly http: AxiosInstance;
   private readonly authHttp: AxiosInstance;
-  private readonly writeGate: WriteConcurrencyGate;
+  /** Single FIFO cap for every Onecta gateway request (GET list/device + PATCH). */
+  private readonly onectaHttpGate: WriteConcurrencyGate;
 
   private accessToken: string | null = null;
   /** Unix epoch ms when the current token expires. */
@@ -223,7 +224,7 @@ export class DaikinClient {
       ? Math.floor(writeConcurrency)
       : 1;
     const clamped = Math.min(MAX_DAIKIN_WRITE_CONCURRENCY, Math.max(1, wc));
-    this.writeGate = new WriteConcurrencyGate(clamped);
+    this.onectaHttpGate = new WriteConcurrencyGate(clamped);
 
     this.authHttp = axios.create({ timeout: 15_000 });
 
@@ -340,7 +341,7 @@ export class DaikinClient {
    * The current implementation assumes the full list is returned in one response.
    */
   async getDevices(): Promise<RawDevice[]> {
-    const response = await this.http.get<unknown>('/v1/gateway-devices');
+    const response = await this.onectaHttpGate.run(() => this.http.get<unknown>('/v1/gateway-devices'));
     const data = response.data;
     if (Array.isArray(data)) {
       return data as RawDevice[];
@@ -384,7 +385,9 @@ export class DaikinClient {
    * Raw GET /v1/gateway-devices/{id} payload (for debugging / adapter work).
    */
   async getGatewayDeviceRaw(deviceId: string): Promise<RawDevice> {
-    const response = await this.http.get<RawDevice>(`/v1/gateway-devices/${deviceId}`);
+    const response = await this.onectaHttpGate.run(() =>
+      this.http.get<RawDevice>(`/v1/gateway-devices/${deviceId}`),
+    );
     return response.data;
   }
 
@@ -426,7 +429,7 @@ export class DaikinClient {
     const mpSlug = await this.getClimateManagementPointSlug(deviceId);
     const path = this.characteristicPath(deviceId, mpSlug, 'operationMode');
     logger.debug({ deviceId, mode, path, mpSlug }, 'Setting operation mode');
-    await this.patchWithWriteGate(path, { value: mode });
+    await this.patchWithOnectaGate(path, { value: mode });
   }
 
   /**
@@ -452,7 +455,7 @@ export class DaikinClient {
     const mpSlug = await this.getClimateManagementPointSlug(deviceId);
     const path = this.characteristicPath(deviceId, mpSlug, 'temperatureControl');
     logger.debug({ deviceId, tempC, path, mpSlug }, 'Setting temperature setpoint');
-    await this.patchWithWriteGate(path, {
+    await this.patchWithOnectaGate(path, {
       value: {
         operationModes: {
           heating: {
@@ -477,12 +480,12 @@ export class DaikinClient {
   ): Promise<void> {
     const path = this.characteristicPath(deviceId, mpSlug, characteristicKey);
     logger.debug({ deviceId, mpSlug, characteristicKey, path }, 'PATCH characteristic (restore)');
-    await this.patchWithWriteGate(path, { value });
+    await this.patchWithOnectaGate(path, { value });
   }
 
-  /** All Onecta characteristic PATCHes share one gate to avoid burst 429s. */
-  private patchWithWriteGate(url: string, body: unknown): Promise<unknown> {
-    return this.writeGate.run(() => this.http.patch(url, body));
+  /** PATCH goes through the same Onecta gate as GET (shared vendor rate limit). */
+  private patchWithOnectaGate(url: string, body: unknown): Promise<unknown> {
+    return this.onectaHttpGate.run(() => this.http.patch(url, body));
   }
 
   // ─── Private helpers ───────────────────────────────────────────────────────

@@ -218,7 +218,10 @@ export function createRouter(
       return;
     }
 
-    logger.info({ task: TASK_DRY_STOP, devices: deviceIds }, 'Stopping dry cycle — restoring saved settings');
+    logger.info(
+      { task: TASK_DRY_STOP, devices: deviceIds },
+      'Stopping dry cycle - restoring saved settings',
+    );
 
     try {
       const results = await executeDryStop(client, humidityFsm, deviceIds, restoreStore);
