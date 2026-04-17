@@ -41,6 +41,7 @@ async function main(): Promise<void> {
     config.daikin.baseUrl,
     config.daikin.authUrl,
     refreshTokenStore,
+    config.daikin.writeConcurrency,
   );
 
   log('Fetching GET /v1/gateway-devices …');
