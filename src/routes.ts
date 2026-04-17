@@ -52,7 +52,7 @@ async function executeDryStart(
           entries,
           capturedAt: new Date().toISOString(),
         });
-        await client.setOperationMode(deviceId, 'dry' as OperationMode);
+        await client.setOperationMode(deviceId, 'dry' as OperationMode, raw);
         return { deviceId, success: true };
       } catch (err) {
         const error = err instanceof Error ? err.message : String(err);
@@ -114,16 +114,18 @@ async function executeDryStop(
             }
           }
           await restoreStore.delete(deviceId);
-          const state = await client.getDeviceState(deviceId);
+          const rawAfterRestore = await client.getGatewayDeviceRaw(deviceId);
+          const state = client.parseGatewayPayload(rawAfterRestore);
           if (state.operationMode === 'dry') {
             logger.warn({ deviceId }, 'Still in dry after restore — applying heat fallback');
-            await client.setOperationMode(deviceId, 'heating' as OperationMode);
-            await client.setTemperature(deviceId, config.heatTargetTempC);
+            await client.setOperationMode(deviceId, 'heating' as OperationMode, rawAfterRestore);
+            await client.setTemperature(deviceId, config.heatTargetTempC, rawAfterRestore);
           }
         } else {
           logger.error({ deviceId }, 'No restore snapshot — applying heat fallback');
-          await client.setOperationMode(deviceId, 'heating' as OperationMode);
-          await client.setTemperature(deviceId, config.heatTargetTempC);
+          const rawFallback = await client.getGatewayDeviceRaw(deviceId);
+          await client.setOperationMode(deviceId, 'heating' as OperationMode, rawFallback);
+          await client.setTemperature(deviceId, config.heatTargetTempC, rawFallback);
         }
         return { deviceId, success: true };
       } catch (err) {

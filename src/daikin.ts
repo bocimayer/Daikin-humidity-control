@@ -382,6 +382,14 @@ export class DaikinClient {
   }
 
   /**
+   * Parse a gateway device payload without a network call (same logic as getDeviceState).
+   * Callers that already fetched raw for dry-start/stop should use this to avoid duplicate GETs.
+   */
+  parseGatewayPayload(device: RawDevice): DaikinDeviceState {
+    return this.parseDeviceState(device);
+  }
+
+  /**
    * Raw GET /v1/gateway-devices/{id} payload (for debugging / adapter work).
    */
   async getGatewayDeviceRaw(deviceId: string): Promise<RawDevice> {
@@ -424,9 +432,17 @@ export class DaikinClient {
    * Confirm exact casing for mode values ("dry" vs "Dry" etc.) against live docs.
    * Confirm "climateControl" is the correct managementPointType for AC units
    * (vs "climateControlInfo").
+   *
+   * @param deviceRaw When set (e.g. same payload as dry-start snapshot), skips a redundant GET for mp slug.
    */
-  async setOperationMode(deviceId: string, mode: OperationMode): Promise<void> {
-    const mpSlug = await this.getClimateManagementPointSlug(deviceId);
+  async setOperationMode(
+    deviceId: string,
+    mode: OperationMode,
+    deviceRaw?: RawDevice,
+  ): Promise<void> {
+    const mpSlug = deviceRaw
+      ? this.climateMpSlugFromRaw(deviceRaw)
+      : await this.getClimateManagementPointSlug(deviceId);
     const path = this.characteristicPath(deviceId, mpSlug, 'operationMode');
     logger.debug({ deviceId, mode, path, mpSlug }, 'Setting operation mode');
     await this.patchWithOnectaGate(path, { value: mode });
@@ -450,9 +466,13 @@ export class DaikinClient {
    *   }
    * }
    * Some devices may use a simpler flat body: { "value": <number> }
+   *
+   * @param deviceRaw When set, skips a redundant GET for mp slug (pair with setOperationMode after one GET).
    */
-  async setTemperature(deviceId: string, tempC: number): Promise<void> {
-    const mpSlug = await this.getClimateManagementPointSlug(deviceId);
+  async setTemperature(deviceId: string, tempC: number, deviceRaw?: RawDevice): Promise<void> {
+    const mpSlug = deviceRaw
+      ? this.climateMpSlugFromRaw(deviceRaw)
+      : await this.getClimateManagementPointSlug(deviceId);
     const path = this.characteristicPath(deviceId, mpSlug, 'temperatureControl');
     logger.debug({ deviceId, tempC, path, mpSlug }, 'Setting temperature setpoint');
     await this.patchWithOnectaGate(path, {
@@ -506,16 +526,20 @@ export class DaikinClient {
    * PATCH URLs must use the device’s real management-point id (`embeddedId`),
    * e.g. `climateControl` or `climateControlInfo`.
    */
-  private async getClimateManagementPointSlug(deviceId: string): Promise<string> {
-    const device = await this.getGatewayDeviceRaw(deviceId);
+  private climateMpSlugFromRaw(device: RawDevice): string {
     const mp =
       this.findManagementPoint(device, 'climateControl') ??
       this.findManagementPoint(device, 'climateControlInfo');
     if (!mp) {
-      logger.warn({ deviceId }, 'No climate management point; using climateControl');
+      logger.warn({ deviceId: device.id }, 'No climate management point; using climateControl');
       return 'climateControl';
     }
     return String(mp.embeddedId ?? mp.managementPointType ?? 'climateControl');
+  }
+
+  private async getClimateManagementPointSlug(deviceId: string): Promise<string> {
+    const device = await this.getGatewayDeviceRaw(deviceId);
+    return this.climateMpSlugFromRaw(device);
   }
 
   private findManagementPoint(
