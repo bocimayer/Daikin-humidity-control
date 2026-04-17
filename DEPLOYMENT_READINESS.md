@@ -199,6 +199,16 @@ Optional runtime tuning:
 - `MODE_STRATEGY`
 - `DRY_DURATION_MINUTES`
 - `LOG_LEVEL`
+- `DAIKIN_RESTORE_COLLECTION` (Firestore collection for pre-dry Onecta snapshots; default `device_restore_state`)
+
+Optional notifications (set on GitHub Environment `gcp` if you use them; **do not paste refresh tokens into chat** — use **`/guide`** in Cursor for one-step-at-a-time setup):
+
+- `NOTIFY_EMAIL`
+- `GMAIL_SENDER`
+- `GMAIL_OAUTH_CLIENT_ID`
+- `GMAIL_OAUTH_CLIENT_SECRET`
+- `GMAIL_REFRESH_TOKEN`
+- `NOTIFY_WEBHOOK_URL`
 
 ---
 
@@ -211,6 +221,7 @@ NODE_ENV=production
 DAIKIN_TOKEN_STORE=firestore
 DAIKIN_FIRESTORE_COLLECTION=oauth_tokens
 DAIKIN_FIRESTORE_DOCUMENT=daikin_onecta
+DAIKIN_RESTORE_COLLECTION=device_restore_state
 HEAT_TARGET_TEMP_C=16
 HUMIDITY_HIGH_THRESHOLD=70
 HUMIDITY_LOW_THRESHOLD=60
@@ -218,6 +229,12 @@ MODE_STRATEGY=timer
 DRY_DURATION_MINUTES=120
 LOG_LEVEL=info
 EXPECTED_AUDIENCE=<Cloud Run service URL>
+NOTIFY_EMAIL=<optional>
+GMAIL_SENDER=<optional>
+GMAIL_OAUTH_CLIENT_ID=<optional>
+GMAIL_OAUTH_CLIENT_SECRET=<optional>
+GMAIL_REFRESH_TOKEN=<optional>
+NOTIFY_WEBHOOK_URL=<optional>
 ```
 
 Static secrets should be mounted from Secret Manager:
@@ -226,6 +243,8 @@ Static secrets should be mounted from Secret Manager:
 - `DAIKIN_CLIENT_SECRET`
 
 The rotating refresh token should come from Firestore, not a static mounted env var.
+
+**Restore snapshots:** the Cloud Run runtime service account must be able to **read and write** documents in `DAIKIN_RESTORE_COLLECTION` (same GCP project as the token store). This is typically already allowed if the SA has project-wide Firestore access; confirm if you use tighter IAM.
 
 ---
 
@@ -324,6 +343,8 @@ After deployment, verify all of these:
 - token refresh failures are visible in logs
 - Firestore token document updates after rotation
 - quota usage stays within Onecta limits
+- optional: after a controlled task run, task notification (Gmail or webhook) appears as configured — verify without pasting secrets into tickets
+- optional: from a trusted environment with valid `.env`, `npm run test:onnecta` passes including dry → snapshot restore on real hardware
 
 ---
 

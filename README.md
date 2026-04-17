@@ -21,7 +21,7 @@ Cloud Scheduler
 Cloud Run  (private — no public access)
   └─ Express app
        ├─ POST /tasks/dry-start       ← switch all units to DRY
-       ├─ POST /tasks/dry-stop        ← switch all units back to HEAT + setpoint
+       ├─ POST /tasks/dry-stop        ← restore Firestore snapshot of settable Onecta state (fallback: HEAT + setpoint)
        ├─ POST /tasks/check-humidity  ← read humidity, decide via hysteresis FSM
        └─ GET  /health                ← liveness probe (not /healthz on Cloud Run — see routes.ts)
 
@@ -33,7 +33,7 @@ Cloud Run  (private — no public access)
 
 Secrets/state:
 ├─ Secret Manager → static app credentials (`DAIKIN_CLIENT_ID`, `DAIKIN_CLIENT_SECRET`)
-└─ Firestore     → latest rotating refresh token in production
+└─ Firestore     → latest rotating refresh token in production; per-device pre-dry snapshots in `DAIKIN_RESTORE_COLLECTION` (restore after dry-stop)
 ```
 
 ### Quota budget (Daikin private dev app — 200 calls/day)
@@ -57,8 +57,8 @@ Cloud Scheduler calls `/tasks/dry-start` at a fixed time and
 Set `MODE_STRATEGY=timer`.
 
 ```
-[09:00] Scheduler → POST /tasks/dry-start  → all units → DRY
-[11:00] Scheduler → POST /tasks/dry-stop   → all units → HEAT @ 16 °C
+[09:00] Scheduler → POST /tasks/dry-start  → all units → DRY (snapshot of all settable Onecta characteristics saved first)
+[11:00] Scheduler → POST /tasks/dry-stop   → replay snapshot from Firestore; if missing or still in DRY → HEAT @ HEAT_TARGET_TEMP_C
 ```
 
 ### Option B — Humidity-aware
@@ -67,11 +67,13 @@ Cloud Scheduler polls `/tasks/check-humidity` every few hours.
 The hysteresis FSM decides whether to start or stop a dry cycle.
 Set `MODE_STRATEGY=humidity`.
 
+Humidity for the decision is the **maximum** of non-null % RH readings across gateway devices (units without a sensor are skipped). If every unit lacks humidity data, the handler returns `no-humidity-data`.
+
 ```
 [every 3 h] Scheduler → POST /tasks/check-humidity
-               if humidity ≥ 70 % → trigger dry-start
-               if humidity ≤ 60 % → trigger dry-stop
-               else               → no-op
+               if max(RH) ≥ HUMIDITY_HIGH_THRESHOLD (and not in dry cycle) → dry-start
+               if max(RH) ≤ HUMIDITY_LOW_THRESHOLD (and in dry cycle)     → dry-stop
+               else                                                         → no-op
 [00:00] Scheduler → POST /tasks/dry-stop  (safety stop — runs regardless)
 ```
 
@@ -92,13 +94,20 @@ Set `MODE_STRATEGY=humidity`.
 | `DAIKIN_TOKEN_FILE_PATH` | no | OS-specific app-data path | Local development token file path |
 | `DAIKIN_FIRESTORE_COLLECTION` | no | `oauth_tokens` | Firestore collection for the latest rotating refresh token |
 | `DAIKIN_FIRESTORE_DOCUMENT` | no | `daikin_onecta` | Firestore document id for the latest rotating refresh token |
+| `DAIKIN_RESTORE_COLLECTION` | no | `device_restore_state` | Firestore collection for per-device snapshots of settable Onecta characteristics (capture before DRY, replay on dry-stop) |
 | `DRY_DURATION_MINUTES` | no | `120` | Informational — used to space Scheduler jobs |
-| `HEAT_TARGET_TEMP_C` | no | `16` | Frost-protection setpoint after dry cycle |
-| `HUMIDITY_HIGH_THRESHOLD` | no | `70` | % RH at which dry cycle starts |
-| `HUMIDITY_LOW_THRESHOLD` | no | `60` | % RH at which dry cycle stops |
+| `HEAT_TARGET_TEMP_C` | no | `16` | Frost-protection setpoint when dry-stop **cannot** restore from snapshot (fallback if snapshot missing or unit still in DRY after replay) |
+| `HUMIDITY_HIGH_THRESHOLD` | no | `70` | % RH — with humidity strategy, **max** reading across devices at/above this starts dry (when not already in dry cycle) |
+| `HUMIDITY_LOW_THRESHOLD` | no | `60` | % RH — with humidity strategy, **max** reading at/below this stops dry (when in dry cycle) |
 | `MODE_STRATEGY` | no | `timer` | `timer` or `humidity` |
 | `LOG_LEVEL` | no | `info` | `trace` `debug` `info` `warn` `error` `fatal` |
 | `EXPECTED_AUDIENCE` | **yes** | — | Cloud Run service URL (OIDC audience check) |
+| `NOTIFY_EMAIL` | no | — | Optional — recipient for task notifications (requires all `GMAIL_*` below to send mail) |
+| `GMAIL_SENDER` | no | — | Optional — From address for Gmail API (must match an authorized send-as identity) |
+| `GMAIL_OAUTH_CLIENT_ID` | no | — | Optional — Gmail OAuth 2.0 client id |
+| `GMAIL_OAUTH_CLIENT_SECRET` | no | — | Optional — Gmail OAuth 2.0 client secret |
+| `GMAIL_REFRESH_TOKEN` | no | — | Optional — OAuth refresh token for the sending identity (store in Secret Manager / GitHub env in production; never commit) |
+| `NOTIFY_WEBHOOK_URL` | no | — | Optional — HTTPS URL for JSON POST when tasks complete (Zapier/Make/custom) |
 
 **Gateway devices:** the service does **not** take device UUIDs from env. On each task it calls Onecta `GET /v1/gateway-devices` and uses **every** returned device for dry-start/stop and for humidity reads (null humidity on a unit is skipped). See `src/device-ids.ts` and `docs/PRODUCTION_SETUP.md`.
 
@@ -150,7 +159,7 @@ curl -X POST http://localhost:8080/tasks/check-humidity
 ```bash
 npm test              # run all tests (offline unit tests only)
 npm run test:coverage # with coverage report
-npm run test:onnecta  # live Daikin Onecta: list devices, read state, reversible setpoint PATCH (needs valid .env)
+npm run test:onnecta  # live Onecta: list/read, reversible setpoint PATCH, dry → snapshot restore on first device (needs valid .env)
 npm run daikin:live-smoke   # same flow as a CLI script (optional: device id, --raw)
 npm run daikin:seed-firestore-from-local  # copy local refresh-token.json → Firestore (needs GOOGLE_CLOUD_PROJECT + ADC); see docs/PRODUCTION_SETUP.md
 ```
@@ -161,12 +170,17 @@ Local development uses the configured local token file as the source of truth fo
 
 Unit test suites (default `npm test`):
 - `tests/hysteresis.test.ts` — HumidityStateMachine transitions
+- `tests/humidity-max-aggregation.test.ts` — max-RH vs average contract for FSM input
 - `tests/idempotency.test.ts` — IdempotencyGuard allow/block/reset
 - `tests/config.test.ts` — Zod schema validation and defaults
 - `tests/device-ids.test.ts` — gateway device list helper
+- `tests/onecta-snapshot.test.ts` — settable-characteristic snapshot + restore sort order
+- `tests/task-notify.test.ts` — optional Gmail + webhook notifications
 
 Live API (separate Jest config, `npm run test:onnecta`):
-- `tests/daikin-onecta.integration.test.ts` — real Onecta list / read / write
+- `tests/daikin-onecta.integration.test.ts` — real Onecta list / read / reversible setpoint nudge / dry cycle with full settable-characteristic restore
+
+Settable-characteristic inventory (reviewer / operator): run `npx ts-node scripts/dump-onecta-settable.ts` against live units; see `data/onecta-settable-inventory.sample.json` for JSON shape.
 
 ---
 
