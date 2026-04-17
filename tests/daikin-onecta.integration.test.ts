@@ -13,7 +13,12 @@
  */
 
 import { config } from '../src/config';
-import { DaikinClient } from '../src/daikin';
+import {
+  collectSettableCharacteristicsSnapshot,
+  DaikinClient,
+  readOperationModeFromRawDevice,
+  sortSnapshotEntriesForRestore,
+} from '../src/daikin';
 import { createRefreshTokenStore } from '../src/token-store';
 
 const enabled = process.env.DAIKIN_INTEGRATION_TEST === '1';
@@ -37,6 +42,7 @@ const enabled = process.env.DAIKIN_INTEGRATION_TEST === '1';
         config.daikin.baseUrl,
         config.daikin.authUrl,
         refreshTokenStore,
+        config.daikin.writeConcurrency,
       );
     });
 
@@ -100,5 +106,49 @@ const enabled = process.env.DAIKIN_INTEGRATION_TEST === '1';
       expect(final.setpointTempC).not.toBeNull();
       expect(Math.abs((final.setpointTempC as number) - original)).toBeLessThanOrEqual(0.5);
     });
+
+    /**
+     * Full snapshot → DRY → PATCH replay restore (same path as production dry-stop).
+     * Runs with other live tests when DAIKIN_INTEGRATION_TEST=1 (real hardware).
+     */
+    it(
+      'dry cycle on one device: snapshot, set dry, restore via patchCharacteristic replay',
+      async () => {
+        const devices = await client.getDevices();
+        expect(devices.length).toBeGreaterThan(0);
+        const deviceId = devices[0].id;
+
+        const rawBefore = await client.getGatewayDeviceRaw(deviceId);
+        const modeBefore = readOperationModeFromRawDevice(rawBefore);
+        if (modeBefore === 'dry') {
+          console.warn('[integration] Device already in dry — skipping dry-restore test.');
+          return;
+        }
+
+        const entries = collectSettableCharacteristicsSnapshot(rawBefore);
+        expect(entries.length).toBeGreaterThan(0);
+
+        await client.setOperationMode(deviceId, 'dry');
+        const mid = await client.getDeviceState(deviceId);
+        expect(mid.operationMode).toBe('dry');
+
+        const ordered = sortSnapshotEntriesForRestore(entries);
+        for (const e of ordered) {
+          try {
+            await client.patchCharacteristic(deviceId, e.mpSlug, e.characteristicKey, e.value);
+          } catch (err) {
+            console.warn('[integration] restore PATCH failed', e, err);
+          }
+        }
+
+        const after = await client.getDeviceState(deviceId);
+        expect(after.operationMode).not.toBe('dry');
+        if (modeBefore !== null) {
+          expect(after.operationMode).toBe(modeBefore);
+        }
+      },
+      120_000,
+    );
   },
 );
+

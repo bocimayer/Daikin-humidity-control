@@ -21,10 +21,13 @@ function setEnv(overrides: Record<string, string | undefined>): void {
     ...Object.keys(VALID_ENV),
     'PORT', 'NODE_ENV', 'DAIKIN_BASE_URL', 'DAIKIN_AUTH_URL',
     'DAIKIN_TOKEN_STORE', 'DAIKIN_TOKEN_FILE_PATH',
-    'DAIKIN_FIRESTORE_COLLECTION', 'DAIKIN_FIRESTORE_DOCUMENT',
+    'DAIKIN_FIRESTORE_COLLECTION', 'DAIKIN_FIRESTORE_DOCUMENT', 'DAIKIN_RESTORE_COLLECTION',
     'DRY_DURATION_MINUTES', 'HEAT_TARGET_TEMP_C',
     'HUMIDITY_HIGH_THRESHOLD', 'HUMIDITY_LOW_THRESHOLD',
     'MODE_STRATEGY', 'LOG_LEVEL',
+    'NOTIFY_EMAIL',
+    'GMAIL_OAUTH_CLIENT_ID', 'GMAIL_OAUTH_CLIENT_SECRET', 'GMAIL_REFRESH_TOKEN', 'GMAIL_SENDER',
+    'NOTIFY_WEBHOOK_URL',
   ]) {
     delete process.env[key];
   }
@@ -107,6 +110,29 @@ describe('config — valid environment', () => {
     expect(config.daikin.tokenStore.localFilePath).toBe('/tmp/daikin-refresh.json');
     expect(config.daikin.tokenStore.firestoreCollection).toBe('custom_collection');
     expect(config.daikin.tokenStore.firestoreDocument).toBe('custom_document');
+  });
+
+  it('parses optional Gmail + webhook env vars', async () => {
+    setEnv({
+      NOTIFY_EMAIL: 'ops@example.com',
+      GMAIL_OAUTH_CLIENT_ID: 'gmail-client-id',
+      GMAIL_OAUTH_CLIENT_SECRET: 'gmail-secret',
+      GMAIL_REFRESH_TOKEN: 'gmail-refresh',
+      GMAIL_SENDER: 'notify@example.com',
+      NOTIFY_WEBHOOK_URL: 'https://hooks.example.com/daikin',
+    });
+    const { config } = await loadConfig();
+    expect(config.notifyEmail).toBe('ops@example.com');
+    expect(config.gmailOAuthClientId).toBe('gmail-client-id');
+    expect(config.gmailOAuthClientSecret).toBe('gmail-secret');
+    expect(config.gmailRefreshToken).toBe('gmail-refresh');
+    expect(config.gmailSender).toBe('notify@example.com');
+    expect(config.notifyWebhookUrl).toBe('https://hooks.example.com/daikin');
+  });
+
+  it('defaults DAIKIN_RESTORE_COLLECTION', async () => {
+    const { config } = await loadConfig();
+    expect(config.daikinRestoreCollection).toBe('device_restore_state');
   });
 });
 

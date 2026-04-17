@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "purpose": "Checked-in example of settable-characteristic inventory (same shape as scripts/dump-onecta-settable.ts per-device JSON lines). Replace or extend with output from a live dump for your gateway models.",
+  "sampleDerivedFromFixture": {
+    "deviceId": "sample-gateway-1",
+    "settableCount": 3,
+    "entries": [
+      {
+        "mpSlug": "climateControl",
+        "characteristicKey": "fanSpeed",
+        "value": "auto"
+      },
+      {
+        "mpSlug": "climateControl",
+        "characteristicKey": "operationMode",
+        "value": "heating"
+      },
+      {
+        "mpSlug": "climateControl",
+        "characteristicKey": "temperatureControl",
+        "value": {
+          "operationModes": {
+            "heating": {
+              "setpoints": {
+                "roomTemperature": { "value": 22 }
+              }
+            }
+          }
+        }
+      }
+    ]
+  }
+}

@@ -1,0 +1,43 @@
+{
+  "id": "sample-gateway-1",
+  "managementPoints": [
+    {
+      "embeddedId": "climateControl",
+      "managementPointType": "climateControl",
+      "operationMode": {
+        "value": "heating",
+        "settable": true,
+        "reportable": true
+      },
+      "temperatureControl": {
+        "value": {
+          "operationModes": {
+            "heating": {
+              "setpoints": {
+                "roomTemperature": { "value": 22 }
+              }
+            }
+          }
+        },
+        "settable": true,
+        "reportable": true
+      },
+      "fanSpeed": {
+        "value": "auto",
+        "settable": true,
+        "reportable": true
+      }
+    },
+    {
+      "embeddedId": "gateway",
+      "managementPointType": "gateway",
+      "characteristics": {
+        "name": {
+          "value": "Living room",
+          "settable": false,
+          "reportable": true
+        }
+      }
+    }
+  ]
+}
