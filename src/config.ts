@@ -4,6 +4,7 @@ import {
   DEFAULT_DAIKIN_AUTH_URL,
   DEFAULT_DAIKIN_BASE_URL,
   DEFAULT_DRY_DURATION_MINUTES,
+  DEFAULT_DAIKIN_RESTORE_COLLECTION,
   DEFAULT_FIRESTORE_COLLECTION,
   DEFAULT_FIRESTORE_DOCUMENT,
   DEFAULT_HEAT_TARGET_TEMP_C,
@@ -13,6 +14,8 @@ import {
   DEFAULT_MODE_STRATEGY,
   DEFAULT_NODE_ENV,
   DEFAULT_PORT,
+  DEFAULT_DAIKIN_WRITE_CONCURRENCY,
+  MAX_DAIKIN_WRITE_CONCURRENCY,
   resolveDefaultTokenStoreBackend,
 } from './env-defaults';
 
@@ -22,6 +25,14 @@ function optionalTrimmedString() {
     const trimmed = val.trim();
     return trimmed === '' ? undefined : trimmed;
   }, z.string().optional());
+}
+
+function optionalUrlString() {
+  return z.preprocess((val) => {
+    if (typeof val !== 'string') return val;
+    const trimmed = val.trim();
+    return trimmed === '' ? undefined : trimmed;
+  }, z.string().url().optional());
 }
 
 const EnvSchema = z.object({
@@ -40,6 +51,13 @@ const EnvSchema = z.object({
   DAIKIN_TOKEN_FILE_PATH: optionalTrimmedString(),
   DAIKIN_FIRESTORE_COLLECTION: z.string().default(DEFAULT_FIRESTORE_COLLECTION),
   DAIKIN_FIRESTORE_DOCUMENT: z.string().default(DEFAULT_FIRESTORE_DOCUMENT),
+  DAIKIN_RESTORE_COLLECTION: z.string().default(DEFAULT_DAIKIN_RESTORE_COLLECTION),
+  DAIKIN_WRITE_CONCURRENCY: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(MAX_DAIKIN_WRITE_CONCURRENCY)
+    .default(DEFAULT_DAIKIN_WRITE_CONCURRENCY),
 
   DRY_DURATION_MINUTES: z.coerce.number().int().positive().default(DEFAULT_DRY_DURATION_MINUTES),
   HEAT_TARGET_TEMP_C: z.coerce.number().min(5).max(30).default(DEFAULT_HEAT_TARGET_TEMP_C),
@@ -52,6 +70,15 @@ const EnvSchema = z.object({
   // Must match the Cloud Run service URL. Used to verify the OIDC token audience.
   // In development, can be any non-empty string (auth is skipped).
   EXPECTED_AUDIENCE: z.string().min(1, 'EXPECTED_AUDIENCE is required (Cloud Run service URL)'),
+
+  // Optional: Gmail API (all four required to send mail via Google).
+  NOTIFY_EMAIL: optionalTrimmedString(),
+  GMAIL_OAUTH_CLIENT_ID: optionalTrimmedString(),
+  GMAIL_OAUTH_CLIENT_SECRET: optionalTrimmedString(),
+  GMAIL_REFRESH_TOKEN: optionalTrimmedString(),
+  GMAIL_SENDER: optionalTrimmedString(),
+  // Optional: JSON POST for automation (Zapier, Make, etc.).
+  NOTIFY_WEBHOOK_URL: optionalUrlString(),
 });
 
 export type AppConfig = {
@@ -69,6 +96,8 @@ export type AppConfig = {
       firestoreCollection: string;
       firestoreDocument: string;
     };
+    /** Cap concurrent Onecta PATCH calls (default 1). */
+    writeConcurrency: number;
   };
   dryDurationMinutes: number;
   heatTargetTempC: number;
@@ -77,6 +106,13 @@ export type AppConfig = {
   modeStrategy: 'timer' | 'humidity';
   logLevel: string;
   expectedAudience: string;
+  daikinRestoreCollection: string;
+  notifyEmail?: string;
+  gmailOAuthClientId?: string;
+  gmailOAuthClientSecret?: string;
+  gmailRefreshToken?: string;
+  gmailSender?: string;
+  notifyWebhookUrl?: string;
 };
 
 function loadConfig(): AppConfig {
@@ -114,6 +150,7 @@ function loadConfig(): AppConfig {
         firestoreCollection: env.DAIKIN_FIRESTORE_COLLECTION,
         firestoreDocument: env.DAIKIN_FIRESTORE_DOCUMENT,
       },
+      writeConcurrency: env.DAIKIN_WRITE_CONCURRENCY,
     },
     dryDurationMinutes: env.DRY_DURATION_MINUTES,
     heatTargetTempC: env.HEAT_TARGET_TEMP_C,
@@ -122,6 +159,13 @@ function loadConfig(): AppConfig {
     modeStrategy: env.MODE_STRATEGY,
     logLevel: env.LOG_LEVEL,
     expectedAudience: env.EXPECTED_AUDIENCE,
+    daikinRestoreCollection: env.DAIKIN_RESTORE_COLLECTION,
+    notifyEmail: env.NOTIFY_EMAIL,
+    gmailOAuthClientId: env.GMAIL_OAUTH_CLIENT_ID,
+    gmailOAuthClientSecret: env.GMAIL_OAUTH_CLIENT_SECRET,
+    gmailRefreshToken: env.GMAIL_REFRESH_TOKEN,
+    gmailSender: env.GMAIL_SENDER,
+    notifyWebhookUrl: env.NOTIFY_WEBHOOK_URL,
   };
 }
 

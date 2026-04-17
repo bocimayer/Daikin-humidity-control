@@ -12,8 +12,10 @@
 
 import axios, { AxiosInstance, AxiosError } from 'axios';
 import axiosRetry from 'axios-retry';
+import { MAX_DAIKIN_WRITE_CONCURRENCY } from './env-defaults';
 import logger from './logger';
 import { RefreshTokenStore } from './token-store';
+import { WriteConcurrencyGate } from './write-concurrency-gate';
 
 // ─── Public types ────────────────────────────────────────────────────────────
 
@@ -41,14 +43,14 @@ interface TokenResponse {
   refresh_token?: string;
 }
 
-interface CharacteristicValue {
+export interface CharacteristicValue {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   value: any;
   settable: boolean;
   reportable: boolean;
 }
 
-interface ManagementPoint {
+export interface ManagementPoint {
   /** Live Onecta payloads use `embeddedId` (see daikin-controller-cloud). */
   embeddedId?: string;
   /** Some responses may use this instead of `embeddedId`. */
@@ -57,9 +59,141 @@ interface ManagementPoint {
   characteristics?: Record<string, CharacteristicValue>;
 }
 
-interface RawDevice {
+export interface RawDevice {
   id: string;
   managementPoints: ManagementPoint[];
+}
+
+/** One settable characteristic captured before dry for later PATCH restore. */
+export type SettableCharacteristicEntry = {
+  mpSlug: string;
+  characteristicKey: string;
+  value: unknown;
+};
+
+function managementPointSlug(mp: ManagementPoint): string {
+  const s = String(mp.embeddedId ?? mp.managementPointType ?? '').trim();
+  return s.length > 0 ? s : 'unknown';
+}
+
+function cloneJsonSafe(value: unknown): unknown {
+  return JSON.parse(JSON.stringify(value)) as unknown;
+}
+
+/**
+ * Walk GET /v1/gateway-devices/{id} payload and collect every characteristic with settable===true.
+ * Used to snapshot full device state before DRY and replay PATCHes after dry-stop.
+ */
+export function collectSettableCharacteristicsSnapshot(device: RawDevice): SettableCharacteristicEntry[] {
+  const out: SettableCharacteristicEntry[] = [];
+  const seen = new Set<string>();
+
+  const add = (mpSlug: string, key: string, cv: CharacteristicValue) => {
+    if (cv.settable !== true) {
+      return;
+    }
+    const dedupe = `${mpSlug}\0${key}`;
+    if (seen.has(dedupe)) {
+      return;
+    }
+    seen.add(dedupe);
+    out.push({
+      mpSlug,
+      characteristicKey: key,
+      value: cloneJsonSafe(cv.value),
+    });
+  };
+
+  const collectFromMp = (mp: ManagementPoint) => {
+    const mpSlug = managementPointSlug(mp);
+
+    if (mp.characteristics) {
+      for (const [key, cv] of Object.entries(mp.characteristics)) {
+        if (cv && typeof cv === 'object' && 'settable' in cv) {
+          add(mpSlug, key, cv as CharacteristicValue);
+        }
+      }
+    }
+
+    const skip = new Set(['embeddedId', 'managementPointType', 'characteristics']);
+    for (const key of Object.keys(mp)) {
+      if (skip.has(key)) {
+        continue;
+      }
+      const v = (mp as Record<string, unknown>)[key];
+      if (
+        v &&
+        typeof v === 'object' &&
+        v !== null &&
+        'value' in v &&
+        'settable' in v &&
+        'reportable' in v
+      ) {
+        add(mpSlug, key, v as CharacteristicValue);
+      }
+    }
+  };
+
+  for (const mp of device.managementPoints ?? []) {
+    collectFromMp(mp);
+  }
+
+  return out;
+}
+
+/**
+ * Restore order: all characteristics except operationMode first (stable sort), then operationMode.
+ * ADAPTER NOTE: adjust if live devices require a different PATCH order.
+ */
+export function sortSnapshotEntriesForRestore(
+  entries: SettableCharacteristicEntry[],
+): SettableCharacteristicEntry[] {
+  const cmp = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
+  const nonOp = entries
+    .filter((e) => e.characteristicKey !== 'operationMode')
+    .sort((a, b) => cmp(a.mpSlug, b.mpSlug) || cmp(a.characteristicKey, b.characteristicKey));
+  const op = entries
+    .filter((e) => e.characteristicKey === 'operationMode')
+    .sort((a, b) => cmp(a.mpSlug, b.mpSlug) || cmp(a.characteristicKey, b.characteristicKey));
+  return [...nonOp, ...op];
+}
+
+/** Read current operation mode from raw device (same sources as parseDeviceState). */
+export function readOperationModeFromRawDevice(device: RawDevice): OperationMode | null {
+  const climateControl =
+    findManagementPointInDevice(device, 'climateControl') ??
+    findManagementPointInDevice(device, 'climateControlInfo');
+  const ch = getCharacteristicFromMp(climateControl, 'operationMode');
+  if (!ch) {
+    return null;
+  }
+  return (ch.value as OperationMode) ?? null;
+}
+
+function findManagementPointInDevice(device: RawDevice, type: string): ManagementPoint | null {
+  return (
+    device.managementPoints?.find(
+      (mp) => mp.managementPointType === type || mp.embeddedId === type,
+    ) ?? null
+  );
+}
+
+function getCharacteristicFromMp(
+  mp: ManagementPoint | null,
+  key: string,
+): CharacteristicValue | undefined {
+  if (!mp) {
+    return undefined;
+  }
+  const nested = mp.characteristics?.[key];
+  if (nested) {
+    return nested;
+  }
+  const direct = (mp as Record<string, unknown>)[key];
+  if (direct && typeof direct === 'object' && direct !== null && 'value' in direct) {
+    return direct as CharacteristicValue;
+  }
+  return undefined;
 }
 
 // ─── DaikinClient ─────────────────────────────────────────────────────────────
@@ -67,6 +201,7 @@ interface RawDevice {
 export class DaikinClient {
   private readonly http: AxiosInstance;
   private readonly authHttp: AxiosInstance;
+  private readonly writeGate: WriteConcurrencyGate;
 
   private accessToken: string | null = null;
   /** Unix epoch ms when the current token expires. */
@@ -81,8 +216,15 @@ export class DaikinClient {
     private readonly baseUrl: string,
     private readonly authUrl: string,
     private readonly refreshTokenStore: RefreshTokenStore,
+    writeConcurrency = 1,
   ) {
     this.currentRefreshToken = '';
+    const wc = Number.isFinite(writeConcurrency)
+      ? Math.floor(writeConcurrency)
+      : 1;
+    const clamped = Math.min(MAX_DAIKIN_WRITE_CONCURRENCY, Math.max(1, wc));
+    this.writeGate = new WriteConcurrencyGate(clamped);
+
     this.authHttp = axios.create({ timeout: 15_000 });
 
     this.http = axios.create({
@@ -99,10 +241,14 @@ export class DaikinClient {
       return cfg;
     });
 
-    // Retry transient errors: network failures, 429, 5xx.
+    // Retry transient errors: network failures, 429, 5xx. exponentialDelay already
+    // merges Retry-After; extra jitter reduces aligned retries across callers.
     axiosRetry(this.http, {
-      retries: 3,
-      retryDelay: axiosRetry.exponentialDelay,
+      retries: 5,
+      retryDelay: (retryCount, err) => {
+        const base = axiosRetry.exponentialDelay(retryCount, err, 100);
+        return base + Math.random() * 600;
+      },
       retryCondition: (err: AxiosError) => {
         if (axiosRetry.isNetworkError(err)) return true;
         const status = err.response?.status ?? 0;
@@ -280,7 +426,7 @@ export class DaikinClient {
     const mpSlug = await this.getClimateManagementPointSlug(deviceId);
     const path = this.characteristicPath(deviceId, mpSlug, 'operationMode');
     logger.debug({ deviceId, mode, path, mpSlug }, 'Setting operation mode');
-    await this.http.patch(path, { value: mode });
+    await this.patchWithWriteGate(path, { value: mode });
   }
 
   /**
@@ -306,7 +452,7 @@ export class DaikinClient {
     const mpSlug = await this.getClimateManagementPointSlug(deviceId);
     const path = this.characteristicPath(deviceId, mpSlug, 'temperatureControl');
     logger.debug({ deviceId, tempC, path, mpSlug }, 'Setting temperature setpoint');
-    await this.http.patch(path, {
+    await this.patchWithWriteGate(path, {
       value: {
         operationModes: {
           heating: {
@@ -317,6 +463,26 @@ export class DaikinClient {
         },
       },
     });
+  }
+
+  /**
+   * Generic characteristic PATCH (used to replay full pre-dry snapshots).
+   * ADAPTER NOTE: body shape is always `{ value: ... }` per Onecta gateway API.
+   */
+  async patchCharacteristic(
+    deviceId: string,
+    mpSlug: string,
+    characteristicKey: string,
+    value: unknown,
+  ): Promise<void> {
+    const path = this.characteristicPath(deviceId, mpSlug, characteristicKey);
+    logger.debug({ deviceId, mpSlug, characteristicKey, path }, 'PATCH characteristic (restore)');
+    await this.patchWithWriteGate(path, { value });
+  }
+
+  /** All Onecta characteristic PATCHes share one gate to avoid burst 429s. */
+  private patchWithWriteGate(url: string, body: unknown): Promise<unknown> {
+    return this.writeGate.run(() => this.http.patch(url, body));
   }
 
   // ─── Private helpers ───────────────────────────────────────────────────────

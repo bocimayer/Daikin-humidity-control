@@ -18,6 +18,7 @@ import { HumidityStateMachine } from './humidity';
 import { IdempotencyGuard } from './idempotency';
 import { requireSchedulerAuth } from './scheduler-auth';
 import { createRouter } from './routes';
+import { DeviceRestoreStore } from './device-restore-store';
 import { createRefreshTokenStore } from './token-store';
 
 // ── Singletons ────────────────────────────────────────────────────────────────
@@ -36,12 +37,15 @@ const daikinClient = new DaikinClient(
   config.daikin.baseUrl,
   config.daikin.authUrl,
   refreshTokenStore,
+  config.daikin.writeConcurrency,
 );
 
 const humidityFsm = new HumidityStateMachine();
 
 // 10-minute minimum gap between repeated executions of the same task.
 const idempotency = new IdempotencyGuard(10 * 60 * 1000);
+
+const deviceRestoreStore = new DeviceRestoreStore(config.daikinRestoreCollection);
 
 // ── Express app ───────────────────────────────────────────────────────────────
 
@@ -54,7 +58,7 @@ app.use(express.json());
 app.use('/tasks', requireSchedulerAuth);
 
 // Mount all routes.
-app.use('/', createRouter(daikinClient, humidityFsm, idempotency));
+app.use('/', createRouter(daikinClient, humidityFsm, idempotency, deviceRestoreStore));
 
 // 404 handler for unknown routes.
 app.use((_req, res) => {
