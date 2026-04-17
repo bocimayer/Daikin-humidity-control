@@ -32,6 +32,10 @@ env:
   #   MODE_STRATEGY                     default: timer
   #   DRY_DURATION_MINUTES              default: 120
   #   LOG_LEVEL                         default: info
+  # Optional notify (GitHub Environment secrets):
+  #   NOTIFY_EMAIL, GMAIL_SENDER, GMAIL_OAUTH_CLIENT_ID, GMAIL_OAUTH_CLIENT_SECRET, GMAIL_REFRESH_TOKEN — Gmail API (all five to enable mail)
+  #   NOTIFY_WEBHOOK_URL — HTTPS JSON webhook
+  #   DAIKIN_RESTORE_COLLECTION — Firestore collection for pre-dry snapshots (default device_restore_state)
 
   SERVICE_NAME: daikin-humidity-control
 jobs:
@@ -110,6 +114,13 @@ jobs:
           MODE_STRATEGY: ${{ secrets.MODE_STRATEGY || 'timer' }}
           DRY_DURATION_MINUTES: ${{ secrets.DRY_DURATION_MINUTES || '120' }}
           LOG_LEVEL: ${{ secrets.LOG_LEVEL || 'info' }}
+          DAIKIN_RESTORE_COLLECTION: ${{ secrets.DAIKIN_RESTORE_COLLECTION || 'device_restore_state' }}
+          NOTIFY_EMAIL: ${{ secrets.NOTIFY_EMAIL || '' }}
+          GMAIL_SENDER: ${{ secrets.GMAIL_SENDER || '' }}
+          GMAIL_OAUTH_CLIENT_ID: ${{ secrets.GMAIL_OAUTH_CLIENT_ID || '' }}
+          GMAIL_OAUTH_CLIENT_SECRET: ${{ secrets.GMAIL_OAUTH_CLIENT_SECRET || '' }}
+          GMAIL_REFRESH_TOKEN: ${{ secrets.GMAIL_REFRESH_TOKEN || '' }}
+          NOTIFY_WEBHOOK_URL: ${{ secrets.NOTIFY_WEBHOOK_URL || '' }}
         run: |
           # OIDC audience must equal status.url from the API. That URL is not derivable from
           # project id/region alone (Cloud Run may use *.a.run.app hostnames). The app requires
@@ -143,6 +154,13 @@ jobs:
               ("MODE_STRATEGY", os.environ["MODE_STRATEGY"]),
               ("DRY_DURATION_MINUTES", os.environ["DRY_DURATION_MINUTES"]),
               ("LOG_LEVEL", os.environ["LOG_LEVEL"]),
+              ("DAIKIN_RESTORE_COLLECTION", os.environ.get("DAIKIN_RESTORE_COLLECTION", "device_restore_state")),
+              ("NOTIFY_EMAIL", os.environ.get("NOTIFY_EMAIL", "")),
+              ("GMAIL_SENDER", os.environ.get("GMAIL_SENDER", "")),
+              ("GMAIL_OAUTH_CLIENT_ID", os.environ.get("GMAIL_OAUTH_CLIENT_ID", "")),
+              ("GMAIL_OAUTH_CLIENT_SECRET", os.environ.get("GMAIL_OAUTH_CLIENT_SECRET", "")),
+              ("GMAIL_REFRESH_TOKEN", os.environ.get("GMAIL_REFRESH_TOKEN", "")),
+              ("NOTIFY_WEBHOOK_URL", os.environ.get("NOTIFY_WEBHOOK_URL", "")),
           ]
           with open("cloud-run-env.yaml", "w", encoding="utf-8") as f:
               for key, val in pairs:
