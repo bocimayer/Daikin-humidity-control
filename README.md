@@ -111,7 +111,7 @@ Set `MODE_STRATEGY=humidity`.
 | `HEAT_TARGET_TEMP_C` | no | `16` | Frost-protection setpoint when dry-stop **cannot** restore from snapshot (fallback if snapshot missing or unit still in DRY after replay) |
 | `HUMIDITY_HIGH_THRESHOLD` | no | `70` | % RH — with humidity strategy, **max** reading across devices at/above this starts dry (when not already in dry cycle) |
 | `HUMIDITY_LOW_THRESHOLD` | no | `60` | % RH — with humidity strategy, **max** reading at/below this stops dry (when in dry cycle) |
-| `MODE_STRATEGY` | no | `timer` | `timer` or `humidity` |
+| `MODE_STRATEGY` | no | `humidity` | `timer` or `humidity` (GitHub Actions deploy defaults to **humidity** when the secret is unset) |
 | `LOG_LEVEL` | no | `info` | `trace` `debug` `info` `warn` `error` `fatal` |
 | `AUTOMATION_ENABLED` | no | `true` | Master switch: `false` / `0` / `off` / `disabled` skips `dry-start`, `dry-stop`, and `check-humidity` (still logs). Change via Cloud Run env / Secret Manager — not a public URL. |
 | `DAIKIN_WRITE_CONCURRENCY` | no | `1` | Max concurrent Onecta **gateway** HTTP calls (GET+PATCH) per process (`1`–`3`). Default `1` serializes all Onecta traffic. |
@@ -273,7 +273,7 @@ After running bootstrap.sh, add the printed secrets to the GitHub **Environment*
 | `HEAT_TARGET_TEMP_C` *(optional)* | `16` |
 | `HUMIDITY_HIGH_THRESHOLD` *(optional)* | `70` |
 | `HUMIDITY_LOW_THRESHOLD` *(optional)* | `60` |
-| `MODE_STRATEGY` *(optional)* | `timer` |
+| `MODE_STRATEGY` *(optional)* | `humidity` (set to `timer` explicitly for fixed-clock jobs only) |
 | `DRY_DURATION_MINUTES` *(optional)* | `120` |
 | `LOG_LEVEL` *(optional)* | `info` |
 | `AUTOMATION_ENABLED` *(optional)* | `true` — set `false` to no-op Onecta tasks without redeploying code |
