@@ -33,12 +33,12 @@ describe('HumidityStateMachine', () => {
 
   it('returns start when humidity reaches high threshold (inactive)', () => {
     expect(fsm.evaluate(70, HIGH, LOW)).toBe('start');
-    expect(fsm.isActive()).toBe(true);
+    expect(fsm.isActive()).toBe(false);
   });
 
   it('returns start when humidity exceeds high threshold (inactive)', () => {
     expect(fsm.evaluate(85, HIGH, LOW)).toBe('start');
-    expect(fsm.isActive()).toBe(true);
+    expect(fsm.isActive()).toBe(false);
   });
 
   // ── Active → no-action ───────────────────────────────────────────────────────
@@ -60,12 +60,16 @@ describe('HumidityStateMachine', () => {
   it('returns stop when humidity drops to low threshold (active)', () => {
     fsm.setActive(true);
     expect(fsm.evaluate(60, HIGH, LOW)).toBe('stop');
+    expect(fsm.isActive()).toBe(true);
+    fsm.setActive(false);
     expect(fsm.isActive()).toBe(false);
   });
 
   it('returns stop when humidity drops below low threshold (active)', () => {
     fsm.setActive(true);
     expect(fsm.evaluate(50, HIGH, LOW)).toBe('stop');
+    expect(fsm.isActive()).toBe(true);
+    fsm.setActive(false);
     expect(fsm.isActive()).toBe(false);
   });
 
@@ -75,9 +79,9 @@ describe('HumidityStateMachine', () => {
     // Below threshold — idle.
     expect(fsm.evaluate(62, HIGH, LOW)).toBe('no-action');
 
-    // Rises above HIGH — start dry.
+    // Rises above HIGH — start dry (routes set active only after Onecta succeeds).
     expect(fsm.evaluate(72, HIGH, LOW)).toBe('start');
-    expect(fsm.isActive()).toBe(true);
+    fsm.setActive(true);
 
     // Still high — stay in dry.
     expect(fsm.evaluate(68, HIGH, LOW)).toBe('no-action');
@@ -87,7 +91,7 @@ describe('HumidityStateMachine', () => {
 
     // Drops to LOW — stop dry.
     expect(fsm.evaluate(60, HIGH, LOW)).toBe('stop');
-    expect(fsm.isActive()).toBe(false);
+    fsm.setActive(false);
 
     // Back to idle below HIGH.
     expect(fsm.evaluate(62, HIGH, LOW)).toBe('no-action');
