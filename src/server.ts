@@ -38,6 +38,7 @@ const daikinClient = new DaikinClient(
   config.daikin.authUrl,
   refreshTokenStore,
   config.daikin.writeConcurrency,
+  config.daikin.httpPaceMs,
 );
 
 const humidityFsm = new HumidityStateMachine();
@@ -73,6 +74,7 @@ const server = app.listen(config.port, () => {
       port: config.port,
       nodeEnv: config.nodeEnv,
       modeStrategy: config.modeStrategy,
+      automationEnabled: config.automationEnabled,
       deviceSource: 'onecta-gateway-list',
       tokenStore: refreshTokenStore.describe(),
     },

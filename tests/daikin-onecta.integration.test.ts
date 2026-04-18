@@ -43,6 +43,7 @@ const enabled = process.env.DAIKIN_INTEGRATION_TEST === '1';
         config.daikin.authUrl,
         refreshTokenStore,
         config.daikin.writeConcurrency,
+        config.daikin.httpPaceMs,
       );
     });
 

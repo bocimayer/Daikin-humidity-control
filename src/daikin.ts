@@ -12,7 +12,11 @@
 
 import axios, { AxiosInstance, AxiosError } from 'axios';
 import axiosRetry from 'axios-retry';
-import { MAX_DAIKIN_WRITE_CONCURRENCY } from './env-defaults';
+import {
+  DEFAULT_DAIKIN_HTTP_PACE_MS,
+  MAX_DAIKIN_HTTP_PACE_MS,
+  MAX_DAIKIN_WRITE_CONCURRENCY,
+} from './env-defaults';
 import logger from './logger';
 import { RefreshTokenStore } from './token-store';
 import { WriteConcurrencyGate } from './write-concurrency-gate';
@@ -203,6 +207,11 @@ export class DaikinClient {
   private readonly authHttp: AxiosInstance;
   /** Single FIFO cap for every Onecta gateway request (GET list/device + PATCH). */
   private readonly onectaHttpGate: WriteConcurrencyGate;
+  /**
+   * Sleep after each Onecta HTTP response while still holding the gate slot, so the next
+   * caller cannot start until the interval elapses (avoids 429 bursts on dry-stop restore).
+   */
+  private readonly httpPaceMs: number;
 
   private accessToken: string | null = null;
   /** Unix epoch ms when the current token expires. */
@@ -218,6 +227,7 @@ export class DaikinClient {
     private readonly authUrl: string,
     private readonly refreshTokenStore: RefreshTokenStore,
     writeConcurrency = 1,
+    httpPaceMs: number = DEFAULT_DAIKIN_HTTP_PACE_MS,
   ) {
     this.currentRefreshToken = '';
     const wc = Number.isFinite(writeConcurrency)
@@ -225,6 +235,9 @@ export class DaikinClient {
       : 1;
     const clamped = Math.min(MAX_DAIKIN_WRITE_CONCURRENCY, Math.max(1, wc));
     this.onectaHttpGate = new WriteConcurrencyGate(clamped);
+
+    const pace = Number.isFinite(httpPaceMs) ? Math.floor(httpPaceMs) : 0;
+    this.httpPaceMs = Math.min(MAX_DAIKIN_HTTP_PACE_MS, Math.max(0, pace));
 
     this.authHttp = axios.create({ timeout: 15_000 });
 
@@ -341,7 +354,7 @@ export class DaikinClient {
    * The current implementation assumes the full list is returned in one response.
    */
   async getDevices(): Promise<RawDevice[]> {
-    const response = await this.onectaHttpGate.run(() => this.http.get<unknown>('/v1/gateway-devices'));
+    const response = await this.runOnectaGated(() => this.http.get<unknown>('/v1/gateway-devices'));
     const data = response.data;
     if (Array.isArray(data)) {
       return data as RawDevice[];
@@ -393,10 +406,26 @@ export class DaikinClient {
    * Raw GET /v1/gateway-devices/{id} payload (for debugging / adapter work).
    */
   async getGatewayDeviceRaw(deviceId: string): Promise<RawDevice> {
-    const response = await this.onectaHttpGate.run(() =>
+    const response = await this.runOnectaGated(() =>
       this.http.get<RawDevice>(`/v1/gateway-devices/${deviceId}`),
     );
     return response.data;
+  }
+
+  /**
+   * Runs one Onecta HTTP call under the concurrency gate; optional pace sleep runs inside the
+   * same gate acquisition so no other Onecta call can interleave before the delay finishes.
+   */
+  private async runOnectaGated<T>(fn: () => Promise<T>): Promise<T> {
+    return this.onectaHttpGate.run(async () => {
+      const out = await fn();
+      if (this.httpPaceMs > 0) {
+        await new Promise<void>((resolve) => {
+          setTimeout(resolve, this.httpPaceMs);
+        });
+      }
+      return out;
+    });
   }
 
   private parseDeviceState(device: RawDevice): DaikinDeviceState {
@@ -505,7 +534,7 @@ export class DaikinClient {
 
   /** PATCH goes through the same Onecta gate as GET (shared vendor rate limit). */
   private patchWithOnectaGate(url: string, body: unknown): Promise<unknown> {
-    return this.onectaHttpGate.run(() => this.http.patch(url, body));
+    return this.runOnectaGated(() => this.http.patch(url, body));
   }
 
   // ─── Private helpers ───────────────────────────────────────────────────────

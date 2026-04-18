@@ -7,6 +7,8 @@
  *   2. Call jest.resetModules() so the next import gets a fresh module instance.
  */
 
+import { DEFAULT_DAIKIN_HTTP_PACE_MS } from '../src/env-defaults';
+
 /** Minimal valid environment that satisfies all required fields. */
 const VALID_ENV: Record<string, string> = {
   DAIKIN_CLIENT_ID: 'test-client-id',
@@ -28,6 +30,9 @@ function setEnv(overrides: Record<string, string | undefined>): void {
     'NOTIFY_EMAIL',
     'GMAIL_OAUTH_CLIENT_ID', 'GMAIL_OAUTH_CLIENT_SECRET', 'GMAIL_REFRESH_TOKEN', 'GMAIL_SENDER',
     'NOTIFY_WEBHOOK_URL',
+    'DAIKIN_WRITE_CONCURRENCY',
+    'DAIKIN_HTTP_PACE_MS',
+    'AUTOMATION_ENABLED',
   ]) {
     delete process.env[key];
   }
@@ -133,6 +138,28 @@ describe('config — valid environment', () => {
   it('defaults DAIKIN_RESTORE_COLLECTION', async () => {
     const { config } = await loadConfig();
     expect(config.daikinRestoreCollection).toBe('device_restore_state');
+  });
+
+  it('defaults DAIKIN_HTTP_PACE_MS for Onecta pacing', async () => {
+    const { config } = await loadConfig();
+    expect(config.daikin.httpPaceMs).toBe(DEFAULT_DAIKIN_HTTP_PACE_MS);
+  });
+
+  it('respects DAIKIN_HTTP_PACE_MS override', async () => {
+    setEnv({ DAIKIN_HTTP_PACE_MS: '0' });
+    const { config } = await loadConfig();
+    expect(config.daikin.httpPaceMs).toBe(0);
+  });
+
+  it('defaults AUTOMATION_ENABLED to true', async () => {
+    const { config } = await loadConfig();
+    expect(config.automationEnabled).toBe(true);
+  });
+
+  it('parses AUTOMATION_ENABLED off', async () => {
+    setEnv({ AUTOMATION_ENABLED: 'false' });
+    const { config } = await loadConfig();
+    expect(config.automationEnabled).toBe(false);
   });
 });
 

@@ -14,7 +14,9 @@ import {
   DEFAULT_MODE_STRATEGY,
   DEFAULT_NODE_ENV,
   DEFAULT_PORT,
+  DEFAULT_DAIKIN_HTTP_PACE_MS,
   DEFAULT_DAIKIN_WRITE_CONCURRENCY,
+  MAX_DAIKIN_HTTP_PACE_MS,
   MAX_DAIKIN_WRITE_CONCURRENCY,
   resolveDefaultTokenStoreBackend,
 } from './env-defaults';
@@ -33,6 +35,14 @@ function optionalUrlString() {
     const trimmed = val.trim();
     return trimmed === '' ? undefined : trimmed;
   }, z.string().url().optional());
+}
+
+/** When false, dry-start / dry-stop / check-humidity no-op (Cloud Run env / Secret Manager only). */
+function parseAutomationEnabled(val: unknown): boolean {
+  if (val === undefined || val === null || val === '') return true;
+  const s = String(val).trim().toLowerCase();
+  if (['0', 'false', 'no', 'off', 'disabled'].includes(s)) return false;
+  return true;
 }
 
 const EnvSchema = z.object({
@@ -58,6 +68,12 @@ const EnvSchema = z.object({
     .min(1)
     .max(MAX_DAIKIN_WRITE_CONCURRENCY)
     .default(DEFAULT_DAIKIN_WRITE_CONCURRENCY),
+  DAIKIN_HTTP_PACE_MS: z.coerce
+    .number()
+    .int()
+    .min(0)
+    .max(MAX_DAIKIN_HTTP_PACE_MS)
+    .default(DEFAULT_DAIKIN_HTTP_PACE_MS),
 
   DRY_DURATION_MINUTES: z.coerce.number().int().positive().default(DEFAULT_DRY_DURATION_MINUTES),
   HEAT_TARGET_TEMP_C: z.coerce.number().min(5).max(30).default(DEFAULT_HEAT_TARGET_TEMP_C),
@@ -66,6 +82,7 @@ const EnvSchema = z.object({
 
   MODE_STRATEGY: z.enum(['timer', 'humidity']).default(DEFAULT_MODE_STRATEGY),
   LOG_LEVEL: z.enum(['trace', 'debug', 'info', 'warn', 'error', 'fatal']).default(DEFAULT_LOG_LEVEL),
+  AUTOMATION_ENABLED: z.preprocess(parseAutomationEnabled, z.boolean()),
 
   // Must match the Cloud Run service URL. Used to verify the OIDC token audience.
   // In development, can be any non-empty string (auth is skipped).
@@ -98,6 +115,8 @@ export type AppConfig = {
     };
     /** Cap concurrent Onecta gateway HTTP calls on this.http: GET + PATCH (default 1). */
     writeConcurrency: number;
+    /** Min ms between gated Onecta HTTP completions (sleep while holding gate slot; 0 = off). */
+    httpPaceMs: number;
   };
   dryDurationMinutes: number;
   heatTargetTempC: number;
@@ -105,6 +124,8 @@ export type AppConfig = {
   humidityLowThreshold: number;
   modeStrategy: 'timer' | 'humidity';
   logLevel: string;
+  /** Master switch: when false, scheduled Onecta tasks are skipped (OIDC still required). */
+  automationEnabled: boolean;
   expectedAudience: string;
   daikinRestoreCollection: string;
   notifyEmail?: string;
@@ -151,6 +172,7 @@ function loadConfig(): AppConfig {
         firestoreDocument: env.DAIKIN_FIRESTORE_DOCUMENT,
       },
       writeConcurrency: env.DAIKIN_WRITE_CONCURRENCY,
+      httpPaceMs: env.DAIKIN_HTTP_PACE_MS,
     },
     dryDurationMinutes: env.DRY_DURATION_MINUTES,
     heatTargetTempC: env.HEAT_TARGET_TEMP_C,
@@ -158,6 +180,7 @@ function loadConfig(): AppConfig {
     humidityLowThreshold: env.HUMIDITY_LOW_THRESHOLD,
     modeStrategy: env.MODE_STRATEGY,
     logLevel: env.LOG_LEVEL,
+    automationEnabled: env.AUTOMATION_ENABLED,
     expectedAudience: env.EXPECTED_AUDIENCE,
     daikinRestoreCollection: env.DAIKIN_RESTORE_COLLECTION,
     notifyEmail: env.NOTIFY_EMAIL,

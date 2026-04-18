@@ -28,6 +28,7 @@ async function main(): Promise<void> {
     config.daikin.authUrl,
     refreshTokenStore,
     config.daikin.writeConcurrency,
+    config.daikin.httpPaceMs,
   );
 
   const ids = await resolveGatewayDeviceIds(client);

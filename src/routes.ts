@@ -30,6 +30,14 @@ interface DeviceResult {
   error?: string;
 }
 
+/** Checked before idempotency so disabling automation does not consume the duplicate window. */
+function respondIfAutomationDisabled(res: Response): boolean {
+  if (config.automationEnabled) return false;
+  logger.warn('AUTOMATION_ENABLED is off — skipping Onecta task');
+  res.status(200).json({ skipped: true, reason: 'automation-disabled' });
+  return true;
+}
+
 // ─── Dry-start logic (shared between direct and humidity-triggered paths) ─────
 
 async function executeDryStart(
@@ -86,67 +94,57 @@ async function executeDryStop(
   deviceIds: string[],
   restoreStore: DeviceRestoreStore,
 ): Promise<DeviceResult[]> {
-  const results = await Promise.allSettled(
-    deviceIds.map(async (deviceId) => {
-      try {
-        const snap = await restoreStore.load(deviceId);
-        if (snap && snap.entries.length > 0) {
-          const ordered = sortSnapshotEntriesForRestore(snap.entries);
-          for (const e of ordered) {
-            try {
-              await client.patchCharacteristic(
+  // One device at a time: each dry-stop issues many restore PATCHes; parallel chains still
+  // serialized HTTP-wise but sequential end-to-end keeps Onecta + Firestore work ordered
+  // and pairs with DAIKIN_HTTP_PACE_MS between every gated call (see daikin.ts).
+  const mapped: DeviceResult[] = [];
+  for (const deviceId of deviceIds) {
+    try {
+      const snap = await restoreStore.load(deviceId);
+      if (snap && snap.entries.length > 0) {
+        const ordered = sortSnapshotEntriesForRestore(snap.entries);
+        for (const e of ordered) {
+          try {
+            await client.patchCharacteristic(
+              deviceId,
+              e.mpSlug,
+              e.characteristicKey,
+              e.value,
+            );
+          } catch (patchErr) {
+            const msg = patchErr instanceof Error ? patchErr.message : String(patchErr);
+            logger.error(
+              {
                 deviceId,
-                e.mpSlug,
-                e.characteristicKey,
-                e.value,
-              );
-            } catch (patchErr) {
-              const msg = patchErr instanceof Error ? patchErr.message : String(patchErr);
-              logger.error(
-                {
-                  deviceId,
-                  mpSlug: e.mpSlug,
-                  characteristicKey: e.characteristicKey,
-                  error: msg,
-                },
-                'Restore PATCH failed',
-              );
-            }
+                mpSlug: e.mpSlug,
+                characteristicKey: e.characteristicKey,
+                error: msg,
+              },
+              'Restore PATCH failed',
+            );
           }
-          await restoreStore.delete(deviceId);
-          const rawAfterRestore = await client.getGatewayDeviceRaw(deviceId);
-          const state = client.parseGatewayPayload(rawAfterRestore);
-          if (state.operationMode === 'dry') {
-            logger.warn({ deviceId }, 'Still in dry after restore — applying heat fallback');
-            await client.setOperationMode(deviceId, 'heating' as OperationMode, rawAfterRestore);
-            await client.setTemperature(deviceId, config.heatTargetTempC, rawAfterRestore);
-          }
-        } else {
-          logger.error({ deviceId }, 'No restore snapshot — applying heat fallback');
-          const rawFallback = await client.getGatewayDeviceRaw(deviceId);
-          await client.setOperationMode(deviceId, 'heating' as OperationMode, rawFallback);
-          await client.setTemperature(deviceId, config.heatTargetTempC, rawFallback);
         }
-        return { deviceId, success: true };
-      } catch (err) {
-        const error = err instanceof Error ? err.message : String(err);
-        logger.error({ deviceId, error }, 'dry-stop failed for device');
-        return { deviceId, success: false, error };
+        await restoreStore.delete(deviceId);
+        const rawAfterRestore = await client.getGatewayDeviceRaw(deviceId);
+        const state = client.parseGatewayPayload(rawAfterRestore);
+        if (state.operationMode === 'dry') {
+          logger.warn({ deviceId }, 'Still in dry after restore — applying heat fallback');
+          await client.setOperationMode(deviceId, 'heating' as OperationMode, rawAfterRestore);
+          await client.setTemperature(deviceId, config.heatTargetTempC, rawAfterRestore);
+        }
+      } else {
+        logger.error({ deviceId }, 'No restore snapshot — applying heat fallback');
+        const rawFallback = await client.getGatewayDeviceRaw(deviceId);
+        await client.setOperationMode(deviceId, 'heating' as OperationMode, rawFallback);
+        await client.setTemperature(deviceId, config.heatTargetTempC, rawFallback);
       }
-    }),
-  );
-
-  const mapped: DeviceResult[] = results.map((result, idx) => {
-    const deviceId = deviceIds[idx];
-    if (result.status === 'fulfilled') {
-      return result.value;
+      mapped.push({ deviceId, success: true });
+    } catch (err) {
+      const error = err instanceof Error ? err.message : String(err);
+      logger.error({ deviceId, error }, 'dry-stop failed for device');
+      mapped.push({ deviceId, success: false, error });
     }
-    return {
-      deviceId,
-      success: false,
-      error: result.reason instanceof Error ? result.reason.message : String(result.reason),
-    };
-  });
+  }
 
   humidityFsm.setActive(false);
   return mapped;
@@ -171,6 +169,7 @@ export function createRouter(
 
   // ── POST /tasks/dry-start ───────────────────────────────────────────────────
   router.post('/tasks/dry-start', async (_req: Request, res: Response) => {
+    if (respondIfAutomationDisabled(res)) return;
     if (!idempotency.checkAndMark(TASK_DRY_START)) {
       logger.info({ task: TASK_DRY_START }, 'Idempotency guard: skipping duplicate trigger');
       res.status(200).json({ skipped: true, reason: 'duplicate-within-window' });
@@ -207,6 +206,7 @@ export function createRouter(
 
   // ── POST /tasks/dry-stop ────────────────────────────────────────────────────
   router.post('/tasks/dry-stop', async (_req: Request, res: Response) => {
+    if (respondIfAutomationDisabled(res)) return;
     if (!idempotency.checkAndMark(TASK_DRY_STOP)) {
       logger.info({ task: TASK_DRY_STOP }, 'Idempotency guard: skipping duplicate trigger');
       res.status(200).json({ skipped: true, reason: 'duplicate-within-window' });
@@ -262,6 +262,7 @@ export function createRouter(
 
   // ── POST /tasks/check-humidity ──────────────────────────────────────────────
   router.post('/tasks/check-humidity', async (_req: Request, res: Response) => {
+    if (respondIfAutomationDisabled(res)) return;
     if (config.modeStrategy !== 'humidity') {
       logger.info(
         { modeStrategy: config.modeStrategy },
@@ -321,6 +322,8 @@ export function createRouter(
         return;
       }
 
+      // Aggregate across devices with a sensor: max RH >= high ⇒ at least one unit is "wet";
+      // max RH <= low ⇒ every unit that reported is below low (same threshold for hysteresis).
       const maxHumidity = Math.max(...humidityReadings);
 
       const decision = humidityFsm.evaluate(
