@@ -542,7 +542,7 @@ in clearly-marked `// ADAPTER NOTE` comments in `src/daikin.ts`. Search for
    Confirm whether pagination is used (cursor, offset, or Link header).
 
 3. **Management point type for AC units**
-   The code uses `climateControl`. Some device models may use `climateControlInfo`.
+   Parsed state prefers `climateControl`, then `climateControlInfo`, then `climateControlMainZone` for `operationMode`, setpoint, and embedded `sensoryData` humidity (`src/daikin.ts`).
    Inspect the raw response from `/v1/gateway-devices` to confirm.
 
 4. **operationMode PATCH path**
@@ -554,10 +554,11 @@ in clearly-marked `// ADAPTER NOTE` comments in `src/daikin.ts`. Search for
    Some device models accept a flat `{ "value": <number> }`. Confirm against live docs.
 
 6. **Humidity sensor path**
-   The code tries two paths in order:
-   - `sensoryData` MP → `sensoryData` characteristic → `indoorHumidity.value`
-   - `sensoryData` MP → `indoorHumidity` characteristic → `.value`
-   Add a third path if neither matches your device.
+   Daikin Onecta exposes RH in more than one place; `src/daikin.ts` aligns with the same shapes Home Assistant’s [jwillemsen/daikin_onecta](https://github.com/jwillemsen/daikin_onecta) reads (`sensor.py` — `sensoryData` on climate MPs). In order:
+   - Standalone `sensoryData` management point → `sensoryData` characteristic → `value` map → `indoorHumidity` / `roomHumidity` → `.value`
+   - Same map on that MP with a direct `indoorHumidity` characteristic
+   - **`climateControl` / `climateControlInfo` / `climateControlMainZone`** → characteristic **`sensoryData`** → **`value`** object → **`indoorHumidity`** or **`roomHumidity`** → numeric `.value`
+   If your model still returns `null`, capture one `GET /v1/gateway-devices/{id}` JSON and extend `daikin.ts` (ADAPTER NOTEs).
 
 7. **Device name field**
    The code reads the name from the `gateway` management point `name` characteristic.

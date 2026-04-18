@@ -21,3 +21,4 @@ All notable changes to this project are documented in this file. The format is b
 ### Fixed
 
 - Mitigation for **split indoor modes after `dry-start` succeeded but `dry-stop` hit `429`**: pacing, stricter cluster policy, and FSM sync (`README.md` — operations / quota sections).
+- **Indoor RH parsing:** read humidity from the **`sensoryData` characteristic on `climateControl` / `climateControlMainZone`** (`value` map keys `indoorHumidity`, `roomHumidity`), matching the field layout used by Home Assistant **daikin_onecta** — not only a standalone `sensoryData` management point (`src/daikin.ts`, `README.md`, `tests/daikin-humidity-paths.test.ts`).
