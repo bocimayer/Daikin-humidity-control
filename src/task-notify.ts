@@ -129,6 +129,10 @@ export async function notifyTaskOutcome(config: AppConfig, payload: TaskNotifyPa
   const hasWebhook = Boolean(config.notifyWebhookUrl?.length);
 
   if (!hasGmail && !hasWebhook) {
+    logger.warn(
+      { task: payload.taskName },
+      'Task notify skipped: configure NOTIFY_EMAIL + all GMAIL_* vars for mail, and/or NOTIFY_WEBHOOK_URL',
+    );
     return;
   }
 

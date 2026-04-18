@@ -1,5 +1,6 @@
 import axios from 'axios';
 import {
+  MIN_MS_BETWEEN_DEVICE_ATTEMPTS,
   computeBackoffMsAfterFailure,
   isLikelyTransientOnectaFailure,
   parseRetryAfterDelayMs,
@@ -41,8 +42,21 @@ describe('onecta-transient-retry', () => {
       config: {} as never,
     };
     const ms = computeBackoffMsAfterFailure(err, 1);
-    expect(ms).toBeGreaterThanOrEqual(2000);
+    expect(ms).toBeGreaterThanOrEqual(MIN_MS_BETWEEN_DEVICE_ATTEMPTS);
     expect(ms).toBeLessThan(4000);
+  });
+
+  it('floors small Retry-After to MIN_MS_BETWEEN_DEVICE_ATTEMPTS', () => {
+    const err = new axios.AxiosError('wait');
+    err.response = {
+      status: 429,
+      data: {},
+      headers: { 'retry-after': '0' },
+      statusText: '',
+      config: {} as never,
+    };
+    expect(parseRetryAfterDelayMs(err)).toBe(0);
+    expect(computeBackoffMsAfterFailure(err, 1)).toBeGreaterThanOrEqual(MIN_MS_BETWEEN_DEVICE_ATTEMPTS);
   });
 
   it('sleep resolves', async () => {

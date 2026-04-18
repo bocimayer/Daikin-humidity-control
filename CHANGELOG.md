@@ -22,6 +22,8 @@ All notable changes to this project are documented in this file. The format is b
 - **Notifications:** optional **`subjectOverride`** on task notify payloads; **mail on every** `check-humidity`, **dry-start**, and **dry-stop** outcome (including skips); **`create-scheduler-jobs.sh`** removes legacy timer **`daikin-dry-start`** / **`daikin-dry-stop`** jobs if present (`src/task-notify.ts`, `src/routes.ts`, `setup/`).
 - **Configuration:** removed **`MODE_STRATEGY`** — automation is always humidity-driven via **`check-humidity`** (`src/config.ts`, `README.md`, `.github/workflows/deploy.yml`).
 - **Dry-start / dry-stop:** every gateway head must succeed (per-device transient retries, no swallowed restore PATCH errors); HTTP **500** if any head still fails after retries — no partial **`devicesControlled`** success (`src/routes.ts`, `src/onecta-transient-retry.ts`, `tests/onecta-transient-retry.test.ts`).
+- **Onecta retry pacing:** outer device retries enforce **`MIN_MS_BETWEEN_DEVICE_ATTEMPTS` (2.5s)** minimum wait between attempts (floors small **`Retry-After`**); sequential devices + existing HTTP gate/pacing (`src/onecta-transient-retry.ts`).
+- **Notifications:** `await notifyTaskOutcome` on dry success/failure and check-humidity outcomes; **warn** when mail/webhook is not configured (`src/routes.ts`, `src/task-notify.ts`).
 
 ### Fixed
 

@@ -1,6 +1,13 @@
 /**
  * Shared backoff for Onecta gateway operations that must succeed on every device
  * (dry-start / dry-stop). Used by `routes.ts` — see `src/daikin.ts` for HTTP-level axios-retry.
+ *
+ * **Sanity — not parallel, not a tight loop:**
+ * - `routes.ts` runs **one gateway device at a time** (sequential `for`); each `op()` uses
+ *   `DaikinClient` which serializes Onecta GET/PATCH via `WriteConcurrencyGate` (default 1) and
+ *   optional `DAIKIN_HTTP_PACE_MS` **between** completions inside the gate.
+ * - Between **outer** attempts on the same device we always `await sleep(...)` with at least
+ *   `MIN_MS_BETWEEN_DEVICE_ATTEMPTS` so we never hammer Onecta as fast as axios-retry alone would.
  */
 
 import axios from 'axios';
@@ -9,6 +16,9 @@ import logger from './logger';
 
 /** Per-device attempts before surfacing failure to the HTTP handler (429 storms need headroom). */
 export const MAX_GATEWAY_DEVICE_ATTEMPTS = 15;
+
+/** Hard floor between outer retries on the same device (ms). Caps tiny/empty Retry-After. */
+export const MIN_MS_BETWEEN_DEVICE_ATTEMPTS = 2500;
 
 export function isLikelyTransientOnectaFailure(err: unknown): boolean {
   if (!axios.isAxiosError(err)) return false;
@@ -33,11 +43,10 @@ export function parseRetryAfterDelayMs(err: unknown): number | undefined {
 
 export function computeBackoffMsAfterFailure(err: unknown, attemptIndex: number): number {
   const fromHeader = parseRetryAfterDelayMs(err);
-  if (fromHeader !== undefined) {
-    return fromHeader + Math.floor(Math.random() * 500);
-  }
-  const exp = Math.min(60_000, 2000 * 2 ** Math.max(0, attemptIndex - 1));
-  return exp + Math.floor(Math.random() * 800);
+  const jitter = Math.floor(Math.random() * 800);
+  const fromExp = Math.min(60_000, 2000 * 2 ** Math.max(0, attemptIndex - 1)) + jitter;
+  const raw = fromHeader !== undefined ? fromHeader + Math.floor(Math.random() * 500) : fromExp;
+  return Math.max(MIN_MS_BETWEEN_DEVICE_ATTEMPTS, raw);
 }
 
 export function sleep(ms: number): Promise<void> {
