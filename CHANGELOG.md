@@ -6,6 +6,9 @@ All notable changes to this project are documented in this file. The format is b
 
 ### Added
 
+- **`POST /tasks/notify-test`**: OIDC-only probe that sends one Gmail message when notify env is configured (`README.md`).
+- **`setup/apply-humidity-strategy-to-cloud.sh`**: sets Cloud Run `MODE_STRATEGY=humidity` and runs scheduler setup (`README.md`).
+
 - **`AUTOMATION_ENABLED`** env: master switch to skip `dry-start`, `dry-stop`, and `check-humidity` without removing OIDC (`README.md`).
 - **`DAIKIN_WRITE_CONCURRENCY`** and **`DAIKIN_HTTP_PACE_MS`**: serialize and pace Onecta gateway HTTP to reduce **`429`** during heavy `dry-stop` restores (`README.md`).
 - **`src/dry-cycle-guards.ts`**: multi-head policy (homogeneous modes, **`dry-stop` only when every head reports `dry`**, humidity cluster gate; dry entry rules see **Changed** below).
@@ -17,6 +20,7 @@ All notable changes to this project are documented in this file. The format is b
 - **`npm run daikin:humidity-snapshot`** — `daikin-live-smoke.ts --read-only`: Onecta snapshot of mode + humidity **without** setpoint PATCH; **`dotenv.config`** honors **`DOTENV_CONFIG_PATH`** before importing app config (`package.json`, `README.md`, `scripts/daikin-live-smoke.ts`).
 - **`HumidityStateMachine.evaluate`** is **pure**; `setActive(true|false)` runs only after **full** dry-start / dry-stop success so the FSM cannot desync from the plant (`README.md`, `tests/hysteresis.test.ts`).
 - **Dry-start / dry-stop / check-humidity**: preflight runs **before** idempotency for timer dry-start/stop where applicable; sequential gateway reads for cluster checks (`README.md`).
+- **Notifications:** optional **`subjectOverride`** on task notify payloads; **mail on every** `check-humidity`, **dry-start**, and **dry-stop** outcome (including skips); **`create-scheduler-jobs.sh`** deletes timer **`daikin-dry-start`** / **`daikin-dry-stop`** when switching to **humidity** mode (`src/task-notify.ts`, `src/routes.ts`, `setup/`).
 
 ### Fixed
 

@@ -25,6 +25,7 @@ Cloud Run  (private — no public access)
        ├─ POST /tasks/dry-start       ← preflight cluster modes, then DRY (blocked from **cooling** only; shared outdoor unit)
        ├─ POST /tasks/dry-stop        ← preflight all-in-dry, then restore Firestore snapshot (fallback: HEAT + setpoint)
        ├─ POST /tasks/check-humidity  ← sequential reads, cluster gate, max-RH hysteresis (pure FSM; setActive after Onecta success)
+       ├─ POST /tasks/notify-test     ← sends one Gmail test message (OIDC); does not call Onecta
        ├─ GET  /tasks/device-status   ← read-only snapshot (still OIDC on /tasks)
        └─ GET  /health                ← liveness probe (not /healthz on Cloud Run — see routes.ts)
 
@@ -83,6 +84,10 @@ Set `MODE_STRATEGY=humidity`.
                else                                                                   → no-action
 [00:00] Scheduler → POST /tasks/dry-stop  (safety stop — still runs preflight; may skip if cluster not all-dry)
 ```
+
+**Switch an already-deployed Cloud Run service from timer to humidity (GCP + Scheduler):** from repo root, with `gcloud` authenticated and `PROJECT_ID` / `REGION` set, run **`bash setup/apply-humidity-strategy-to-cloud.sh`** — it sets **`MODE_STRATEGY=humidity`** on the service and runs **`setup/create-scheduler-jobs.sh`**, which **deletes** obsolete **`daikin-dry-start`** / **`daikin-dry-stop`** timer jobs and **upserts** **`daikin-check-humidity`** plus the nightly **`daikin-dry-stop-safety`** job.
+
+**Mail test:** `POST /tasks/notify-test` with the same OIDC token as other `/tasks/*` routes (see `docs/PRODUCTION_SETUP.md`). Successful dry-start, dry-stop, and every check-humidity outcome also trigger mail when Gmail notify env vars are set.
 
 ---
 

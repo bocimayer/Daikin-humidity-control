@@ -17,9 +17,14 @@ export type TaskNotifyPayload = {
   devicesSucceeded: number;
   /** Extra line for humidity-driven runs (e.g. max RH). */
   detail?: string;
+  /** When set, used as the full email subject (RFC 2047 encoded if needed). */
+  subjectOverride?: string;
 };
 
 function buildSubject(payload: TaskNotifyPayload): string {
+  if (payload.subjectOverride?.trim()) {
+    return payload.subjectOverride.trim();
+  }
   const { taskName, devicesSucceeded, devicesTotal } = payload;
   return `[Daikin humidity] ${taskName}: ${devicesSucceeded}/${devicesTotal} devices OK`;
 }

@@ -29,6 +29,7 @@ const TASK_DRY_START = 'dry-start';
 const TASK_DRY_STOP = 'dry-stop';
 const TASK_CHECK_HUMIDITY = 'check-humidity';
 const TASK_DEVICE_STATUS = 'device-status';
+const TASK_NOTIFY_TEST = 'notify-test';
 
 // ─── Per-device result types ──────────────────────────────────────────────────
 
@@ -39,11 +40,49 @@ interface DeviceResult {
 }
 
 /** Checked before idempotency so disabling automation does not consume the duplicate window. */
-function respondIfAutomationDisabled(res: Response): boolean {
+function respondIfAutomationDisabled(res: Response, taskName: string): boolean {
   if (config.automationEnabled) return false;
   logger.warn('AUTOMATION_ENABLED is off — skipping Onecta task');
+  void notifyTaskOutcome(config, {
+    taskName,
+    devicesTotal: 0,
+    devicesSucceeded: 0,
+    detail: 'AUTOMATION_ENABLED is false/0/off/disabled',
+    subjectOverride: `[Daikin humidity] ${taskName}: automation disabled`,
+  });
   res.status(200).json({ skipped: true, reason: 'automation-disabled' });
   return true;
+}
+
+/** One mail per check-humidity invocation (scheduler visibility). */
+function emailCheckHumiditySummary(
+  deviceCount: number,
+  humiditySampleCount: number,
+  responseBody: Record<string, unknown>,
+): void {
+  const action = responseBody.action;
+  const reason = responseBody.reason;
+  const skipped = responseBody.skipped === true;
+  let headline: string;
+  if (skipped) {
+    headline = `skipped (${String(reason ?? 'unknown')})`;
+  } else if (typeof action === 'string') {
+    headline =
+      responseBody.humidity !== undefined && responseBody.humidity !== null
+        ? `${action} maxRH=${String(responseBody.humidity)}`
+        : String(action);
+  } else if (reason) {
+    headline = `no-action (${String(reason)})`;
+  } else {
+    headline = 'ok';
+  }
+  void notifyTaskOutcome(config, {
+    taskName: TASK_CHECK_HUMIDITY,
+    devicesTotal: deviceCount,
+    devicesSucceeded: humiditySampleCount,
+    detail: JSON.stringify(responseBody),
+    subjectOverride: `[Daikin humidity] check-humidity: ${headline}`,
+  });
 }
 
 // ─── Dry-start logic (shared between direct and humidity-triggered paths) ─────
@@ -193,14 +232,39 @@ export function createRouter(
     res.status(200).json({ status: 'ok', ts: new Date().toISOString() });
   });
 
+  // ── POST /tasks/notify-test ─────────────────────────────────────────────────
+  // OIDC-protected manual probe for Gmail + NOTIFY_EMAIL (does not touch Onecta).
+  router.post('/tasks/notify-test', async (_req: Request, res: Response) => {
+    try {
+      await notifyTaskOutcome(config, {
+        taskName: TASK_NOTIFY_TEST,
+        devicesTotal: 1,
+        devicesSucceeded: 1,
+        detail: `POST /tasks/notify-test at ${new Date().toISOString()}`,
+        subjectOverride: '[Daikin humidity] notify-test (mail path OK)',
+      });
+      res.status(200).json({ ok: true, message: 'If Gmail is configured, one test email was sent.' });
+    } catch (err) {
+      logger.error({ task: TASK_NOTIFY_TEST, err }, 'notify-test failed');
+      res.status(500).json({ ok: false, error: 'notify-test failed (see logs)' });
+    }
+  });
+
   // ── POST /tasks/dry-start ───────────────────────────────────────────────────
   router.post('/tasks/dry-start', async (_req: Request, res: Response) => {
-    if (respondIfAutomationDisabled(res)) return;
+    if (respondIfAutomationDisabled(res, TASK_DRY_START)) return;
 
     const deviceIds = await resolveGatewayDeviceIds(client);
     if (deviceIds.length === 0) {
       logger.warn({ task: TASK_DRY_START }, 'Onecta lists no gateway devices — skipping dry-start');
       res.status(200).json({ skipped: true, reason: 'no-gateway-devices' });
+      void notifyTaskOutcome(config, {
+        taskName: TASK_DRY_START,
+        devicesTotal: 0,
+        devicesSucceeded: 0,
+        subjectOverride: `[Daikin humidity] dry-start: no gateway devices`,
+        detail: 'Onecta returned zero gateway devices',
+      });
       return;
     }
 
@@ -228,12 +292,26 @@ export function createRouter(
         reason: preflight.reason,
         modesByDeviceId: preflight.modesByDeviceId,
       });
+      void notifyTaskOutcome(config, {
+        taskName: TASK_DRY_START,
+        devicesTotal: deviceIds.length,
+        devicesSucceeded: 0,
+        subjectOverride: `[Daikin humidity] dry-start: skipped (${preflight.reason})`,
+        detail: JSON.stringify({ reason: preflight.reason, modesByDeviceId: preflight.modesByDeviceId }),
+      });
       return;
     }
 
     if (!idempotency.checkAndMark(TASK_DRY_START)) {
       logger.info({ task: TASK_DRY_START }, 'Idempotency guard: skipping duplicate trigger');
       res.status(200).json({ skipped: true, reason: 'duplicate-within-window' });
+      void notifyTaskOutcome(config, {
+        taskName: TASK_DRY_START,
+        devicesTotal: deviceIds.length,
+        devicesSucceeded: 0,
+        subjectOverride: `[Daikin humidity] dry-start: duplicate (idempotency window)`,
+        detail: 'duplicate-within-window',
+      });
       return;
     }
 
@@ -266,12 +344,19 @@ export function createRouter(
 
   // ── POST /tasks/dry-stop ────────────────────────────────────────────────────
   router.post('/tasks/dry-stop', async (_req: Request, res: Response) => {
-    if (respondIfAutomationDisabled(res)) return;
+    if (respondIfAutomationDisabled(res, TASK_DRY_STOP)) return;
 
     const deviceIds = await resolveGatewayDeviceIds(client);
     if (deviceIds.length === 0) {
       logger.warn({ task: TASK_DRY_STOP }, 'Onecta lists no gateway devices — skipping dry-stop');
       res.status(200).json({ skipped: true, reason: 'no-gateway-devices' });
+      void notifyTaskOutcome(config, {
+        taskName: TASK_DRY_STOP,
+        devicesTotal: 0,
+        devicesSucceeded: 0,
+        subjectOverride: `[Daikin humidity] dry-stop: no gateway devices`,
+        detail: 'Onecta returned zero gateway devices',
+      });
       return;
     }
 
@@ -307,12 +392,26 @@ export function createRouter(
         reason: stopPreflight.reason,
         modesByDeviceId: stopPreflight.modesByDeviceId,
       });
+      void notifyTaskOutcome(config, {
+        taskName: TASK_DRY_STOP,
+        devicesTotal: deviceIds.length,
+        devicesSucceeded: 0,
+        subjectOverride: `[Daikin humidity] dry-stop: skipped (${stopPreflight.reason})`,
+        detail: JSON.stringify({ reason: stopPreflight.reason, modesByDeviceId: stopPreflight.modesByDeviceId }),
+      });
       return;
     }
 
     if (!idempotency.checkAndMark(TASK_DRY_STOP)) {
       logger.info({ task: TASK_DRY_STOP }, 'Idempotency guard: skipping duplicate trigger');
       res.status(200).json({ skipped: true, reason: 'duplicate-within-window' });
+      void notifyTaskOutcome(config, {
+        taskName: TASK_DRY_STOP,
+        devicesTotal: deviceIds.length,
+        devicesSucceeded: 0,
+        subjectOverride: `[Daikin humidity] dry-stop: duplicate (idempotency window)`,
+        detail: 'duplicate-within-window',
+      });
       return;
     }
 
@@ -358,13 +457,15 @@ export function createRouter(
 
   // ── POST /tasks/check-humidity ──────────────────────────────────────────────
   router.post('/tasks/check-humidity', async (_req: Request, res: Response) => {
-    if (respondIfAutomationDisabled(res)) return;
+    if (respondIfAutomationDisabled(res, TASK_CHECK_HUMIDITY)) return;
     if (config.modeStrategy !== 'humidity') {
       logger.info(
         { modeStrategy: config.modeStrategy },
         'check-humidity called but MODE_STRATEGY is not humidity — skipping',
       );
-      res.status(200).json({ skipped: true, reason: 'mode-strategy-is-timer' });
+      const body = { skipped: true, reason: 'mode-strategy-is-timer' };
+      emailCheckHumiditySummary(0, 0, body);
+      res.status(200).json(body);
       return;
     }
 
@@ -373,14 +474,18 @@ export function createRouter(
         { task: TASK_CHECK_HUMIDITY },
         'Idempotency guard: skipping duplicate trigger',
       );
-      res.status(200).json({ skipped: true, reason: 'duplicate-within-window' });
+      const body = { skipped: true, reason: 'duplicate-within-window' };
+      emailCheckHumiditySummary(0, 0, body);
+      res.status(200).json(body);
       return;
     }
 
     const deviceIds = await resolveGatewayDeviceIds(client);
     if (deviceIds.length === 0) {
       logger.warn({ task: TASK_CHECK_HUMIDITY }, 'Onecta lists no gateway devices — skipping');
-      res.status(200).json({ skipped: true, reason: 'no-gateway-devices' });
+      const body = { skipped: true, reason: 'no-gateway-devices' };
+      emailCheckHumiditySummary(0, 0, body);
+      res.status(200).json(body);
       return;
     }
 
@@ -403,12 +508,14 @@ export function createRouter(
           },
           'Humidity automation blocked — indoor heads must agree on operation mode for the outdoor unit',
         );
-        res.status(200).json({
+        const body = {
           action: 'no-action',
           reason: clusterGate.reason,
           modesByDeviceId: clusterGate.modesByDeviceId,
           humidity: null,
-        });
+        };
+        emailCheckHumiditySummary(deviceIds.length, 0, body);
+        res.status(200).json(body);
         return;
       }
 
@@ -430,9 +537,9 @@ export function createRouter(
 
       if (humidityReadings.length === 0) {
         logger.warn('No humidity readings available — cannot make hysteresis decision');
-        res
-          .status(200)
-          .json({ action: 'no-action', reason: 'no-humidity-data', humidity: null });
+        const body = { action: 'no-action', reason: 'no-humidity-data', humidity: null };
+        emailCheckHumiditySummary(deviceIds.length, 0, body);
+        res.status(200).json(body);
         return;
       }
 
@@ -458,6 +565,11 @@ export function createRouter(
         'Hysteresis decision',
       );
 
+      const thresholds = {
+        high: config.humidityHighThreshold,
+        low: config.humidityLowThreshold,
+      };
+
       if (decision === 'start') {
         const startPreflight = evaluateDryStartPreflight(deviceIds, raws);
         if (!startPreflight.ok) {
@@ -469,17 +581,22 @@ export function createRouter(
             },
             'Humidity start blocked by dry-start policy (e.g. all cooling, or cluster rules)',
           );
-          res.status(200).json({
+          const body = {
             action: 'no-action',
             reason: startPreflight.reason,
             modesByDeviceId: startPreflight.modesByDeviceId,
             humidity: maxHumidity,
-          });
+            thresholds,
+          };
+          emailCheckHumiditySummary(deviceIds.length, humidityReadings.length, body);
+          res.status(200).json(body);
           return;
         }
         if (!idempotency.checkAndMark(TASK_DRY_START)) {
           logger.info('Humidity triggered dry-start but idempotency guard blocked it');
-          res.status(200).json({ action: 'start-blocked', humidity: maxHumidity });
+          const body = { action: 'start-blocked', humidity: maxHumidity, thresholds };
+          emailCheckHumiditySummary(deviceIds.length, humidityReadings.length, body);
+          res.status(200).json(body);
           return;
         }
         const startResults = await executeDryStart(
@@ -490,13 +607,19 @@ export function createRouter(
           startPreflight.raws,
         );
         const startOk = startResults.filter((r) => r.success).length;
-        void notifyTaskOutcome(config, {
-          taskName: TASK_DRY_START,
-          devicesTotal: startResults.length,
-          devicesSucceeded: startOk,
-          detail: `humidity-driven maxRH=${maxHumidity.toFixed(1)}`,
-        });
-      } else if (decision === 'stop') {
+        const body = {
+          action: decision,
+          humidity: maxHumidity,
+          thresholds,
+          dryStartDevicesSucceeded: startOk,
+          dryStartDevicesTotal: startResults.length,
+        };
+        emailCheckHumiditySummary(deviceIds.length, humidityReadings.length, body);
+        res.status(200).json(body);
+        return;
+      }
+
+      if (decision === 'stop') {
         const stopPreflight = evaluateDryStopPreflight(climateRows);
         if (!stopPreflight.ok) {
           logger.warn(
@@ -510,30 +633,41 @@ export function createRouter(
           if (stopPreflight.reason === 'cluster-not-in-dry') {
             humidityFsm.setActive(false);
           }
-          res.status(200).json({
+          const body = {
             action: 'no-action',
             reason: stopPreflight.reason,
             modesByDeviceId: stopPreflight.modesByDeviceId,
             humidity: maxHumidity,
-          });
+            thresholds,
+          };
+          emailCheckHumiditySummary(deviceIds.length, humidityReadings.length, body);
+          res.status(200).json(body);
           return;
         }
         if (!idempotency.checkAndMark(TASK_DRY_STOP)) {
           logger.info('Humidity triggered dry-stop but idempotency guard blocked it');
-          res.status(200).json({ action: 'stop-blocked', humidity: maxHumidity });
+          const body = { action: 'stop-blocked', humidity: maxHumidity, thresholds };
+          emailCheckHumiditySummary(deviceIds.length, humidityReadings.length, body);
+          res.status(200).json(body);
           return;
         }
         const stopResults = await executeDryStop(client, humidityFsm, deviceIds, restoreStore);
         const stopOk = stopResults.filter((r) => r.success).length;
-        void notifyTaskOutcome(config, {
-          taskName: TASK_DRY_STOP,
-          devicesTotal: stopResults.length,
-          devicesSucceeded: stopOk,
-          detail: `humidity-driven maxRH=${maxHumidity.toFixed(1)}`,
-        });
+        const body = {
+          action: decision,
+          humidity: maxHumidity,
+          thresholds,
+          dryStopDevicesSucceeded: stopOk,
+          dryStopDevicesTotal: stopResults.length,
+        };
+        emailCheckHumiditySummary(deviceIds.length, humidityReadings.length, body);
+        res.status(200).json(body);
+        return;
       }
 
-      res.status(200).json({ action: decision, humidity: maxHumidity });
+      const body = { action: decision, humidity: maxHumidity, thresholds };
+      emailCheckHumiditySummary(deviceIds.length, humidityReadings.length, body);
+      res.status(200).json(body);
     } catch (err) {
       logger.error({ task: TASK_CHECK_HUMIDITY, err }, 'Unexpected error in check-humidity');
       res.status(500).json({ error: 'Internal error' });

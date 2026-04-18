@@ -67,6 +67,30 @@ describe('task-notify', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it('uses subjectOverride in MIME when provided', async () => {
+    const cfg = {
+      ...baseConfig,
+      notifyEmail: 'to@example.com',
+      gmailSender: 'from@example.com',
+      gmailOAuthClientId: 'cid',
+      gmailOAuthClientSecret: 'csec',
+      gmailRefreshToken: 'rtok',
+    } as AppConfig;
+
+    await notifyTaskOutcome(cfg, {
+      taskName: 'notify-test',
+      devicesTotal: 0,
+      devicesSucceeded: 0,
+      subjectOverride: '[Daikin humidity] custom subject line',
+      detail: 'body detail',
+    });
+
+    expect(gmailSendMock).toHaveBeenCalledTimes(1);
+    const req = gmailSendMock.mock.calls[0][0] as { requestBody?: { raw?: string } };
+    const raw = Buffer.from(req.requestBody?.raw ?? '', 'base64').toString('utf8');
+    expect(raw).toContain('Subject: [Daikin humidity] custom subject line');
+  });
+
   it('POSTs JSON to webhook when NOTIFY_WEBHOOK_URL is set', async () => {
     const cfg = {
       ...baseConfig,

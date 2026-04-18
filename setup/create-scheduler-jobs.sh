@@ -94,6 +94,16 @@ if [ "$MODE_STRATEGY" = "timer" ]; then
   echo "  11:00 → /tasks/dry-stop   (reverts to HEAT @ frost-protection setpoint)"
 
 elif [ "$MODE_STRATEGY" = "humidity" ]; then
+  echo "Option B (humidity): removing fixed-time dry-start/dry-stop if present — hysteresis runs via check-humidity."
+  for obsolete in daikin-dry-start daikin-dry-stop; do
+    if gcloud scheduler jobs describe "$obsolete" \
+         --location="$REGION" --project="$PROJECT_ID" &>/dev/null; then
+      echo "  Deleting obsolete job: ${obsolete}"
+      gcloud scheduler jobs delete "$obsolete" \
+        --location="$REGION" --project="$PROJECT_ID" --quiet
+    fi
+  done
+
   echo "Creating Option B (humidity-aware) jobs..."
 
   # Poll every 3 hours (8 calls/day per leader device — stays within quota).
