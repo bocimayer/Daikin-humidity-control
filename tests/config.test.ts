@@ -26,7 +26,7 @@ function setEnv(overrides: Record<string, string | undefined>): void {
     'DAIKIN_FIRESTORE_COLLECTION', 'DAIKIN_FIRESTORE_DOCUMENT', 'DAIKIN_RESTORE_COLLECTION',
     'DRY_DURATION_MINUTES', 'HEAT_TARGET_TEMP_C',
     'HUMIDITY_HIGH_THRESHOLD', 'HUMIDITY_LOW_THRESHOLD',
-    'MODE_STRATEGY', 'LOG_LEVEL',
+    'LOG_LEVEL',
     'NOTIFY_EMAIL',
     'GMAIL_OAUTH_CLIENT_ID', 'GMAIL_OAUTH_CLIENT_SECRET', 'GMAIL_REFRESH_TOKEN', 'GMAIL_SENDER',
     'NOTIFY_WEBHOOK_URL',
@@ -64,11 +64,6 @@ describe('config — valid environment', () => {
     expect(config.port).toBe(8080);
   });
 
-  it('uses default mode strategy "timer"', async () => {
-    const { config } = await loadConfig();
-    expect(config.modeStrategy).toBe('timer');
-  });
-
   it('uses default heat target 16°C', async () => {
     const { config } = await loadConfig();
     expect(config.heatTargetTempC).toBe(16);
@@ -90,12 +85,6 @@ describe('config — valid environment', () => {
     setEnv({ PORT: '9090' });
     const { config } = await loadConfig();
     expect(config.port).toBe(9090);
-  });
-
-  it('respects humidity strategy override', async () => {
-    setEnv({ MODE_STRATEGY: 'humidity' });
-    const { config } = await loadConfig();
-    expect(config.modeStrategy).toBe('humidity');
   });
 
   it('defaults to firestore token storage in production', async () => {

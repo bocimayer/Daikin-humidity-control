@@ -11,7 +11,6 @@ import {
   DEFAULT_HUMIDITY_HIGH_THRESHOLD,
   DEFAULT_HUMIDITY_LOW_THRESHOLD,
   DEFAULT_LOG_LEVEL,
-  DEFAULT_MODE_STRATEGY,
   DEFAULT_NODE_ENV,
   DEFAULT_PORT,
   DEFAULT_DAIKIN_HTTP_PACE_MS,
@@ -80,7 +79,6 @@ const EnvSchema = z.object({
   HUMIDITY_HIGH_THRESHOLD: z.coerce.number().min(1).max(100).default(DEFAULT_HUMIDITY_HIGH_THRESHOLD),
   HUMIDITY_LOW_THRESHOLD: z.coerce.number().min(1).max(100).default(DEFAULT_HUMIDITY_LOW_THRESHOLD),
 
-  MODE_STRATEGY: z.enum(['timer', 'humidity']).default(DEFAULT_MODE_STRATEGY),
   LOG_LEVEL: z.enum(['trace', 'debug', 'info', 'warn', 'error', 'fatal']).default(DEFAULT_LOG_LEVEL),
   AUTOMATION_ENABLED: z.preprocess(parseAutomationEnabled, z.boolean()),
 
@@ -122,7 +120,6 @@ export type AppConfig = {
   heatTargetTempC: number;
   humidityHighThreshold: number;
   humidityLowThreshold: number;
-  modeStrategy: 'timer' | 'humidity';
   logLevel: string;
   /** Master switch: when false, scheduled Onecta tasks are skipped (OIDC still required). */
   automationEnabled: boolean;
@@ -178,7 +175,6 @@ function loadConfig(): AppConfig {
     heatTargetTempC: env.HEAT_TARGET_TEMP_C,
     humidityHighThreshold: env.HUMIDITY_HIGH_THRESHOLD,
     humidityLowThreshold: env.HUMIDITY_LOW_THRESHOLD,
-    modeStrategy: env.MODE_STRATEGY,
     logLevel: env.LOG_LEVEL,
     automationEnabled: env.AUTOMATION_ENABLED,
     expectedAudience: env.EXPECTED_AUDIENCE,

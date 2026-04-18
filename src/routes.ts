@@ -7,6 +7,7 @@ import {
   readOperationModeFromRawDevice,
   sortSnapshotEntriesForRestore,
 } from './daikin';
+import { runWithGatewayDeviceRetries } from './onecta-transient-retry';
 import type { DeviceClimateRow } from './dry-cycle-guards';
 import {
   evaluateDryStartPreflight,
@@ -86,65 +87,71 @@ function emailCheckHumiditySummary(
 }
 
 // ─── Dry-start logic (shared between direct and humidity-triggered paths) ─────
+// Sequential + per-device retries: every head must succeed before the FSM marks dry active.
+// Each attempt re-reads the gateway (preflight still gates the route before idempotency).
 
 async function executeDryStart(
   client: DaikinClient,
   humidityFsm: HumidityStateMachine,
   deviceIds: string[],
   restoreStore: DeviceRestoreStore,
-  rawsByDeviceId: Map<string, RawDevice>,
 ): Promise<DeviceResult[]> {
-  const results = await Promise.allSettled(
-    deviceIds.map(async (deviceId) => {
-      try {
-        const raw = rawsByDeviceId.get(deviceId);
-        if (!raw) {
-          return { deviceId, success: false, error: 'missing preflight raw payload' };
-        }
-        const currentMode = readOperationModeFromRawDevice(raw);
-        if (currentMode === 'dry') {
-          logger.warn({ deviceId }, 'Device already in dry mode — skipping dry-start for this unit');
-          return { deviceId, success: true };
-        }
-        const entries = collectSettableCharacteristicsSnapshot(raw);
-        await restoreStore.save(deviceId, {
-          entries,
-          capturedAt: new Date().toISOString(),
-        });
-        await client.setOperationMode(deviceId, 'dry' as OperationMode, raw);
-        return { deviceId, success: true };
-      } catch (err) {
-        const error = err instanceof Error ? err.message : String(err);
-        logger.error({ deviceId, error }, 'dry-start failed for device');
-        return { deviceId, success: false, error };
+  for (const deviceId of deviceIds) {
+    await runWithGatewayDeviceRetries('dry-start', deviceId, async () => {
+      const raw = await client.getGatewayDeviceRaw(deviceId);
+      const currentMode = readOperationModeFromRawDevice(raw);
+      if (currentMode === 'dry') {
+        logger.warn({ deviceId }, 'Device already in dry mode — skipping dry-start for this unit');
+        return;
       }
-    }),
-  );
-
-  const mapped: DeviceResult[] = results.map((result, idx) => {
-    const deviceId = deviceIds[idx];
-    if (result.status === 'fulfilled') {
-      return result.value;
-    }
-    return {
-      deviceId,
-      success: false,
-      error: result.reason instanceof Error ? result.reason.message : String(result.reason),
-    };
-  });
-
-  if (mapped.every((r) => r.success)) {
-    humidityFsm.setActive(true);
-  } else {
-    logger.error(
-      { failed: mapped.filter((r) => !r.success).length, total: mapped.length },
-      'dry-start partial failure — leaving humidity FSM inactive',
-    );
+      const entries = collectSettableCharacteristicsSnapshot(raw);
+      await restoreStore.save(deviceId, {
+        entries,
+        capturedAt: new Date().toISOString(),
+      });
+      await client.setOperationMode(deviceId, 'dry' as OperationMode, raw);
+    });
   }
-  return mapped;
+  humidityFsm.setActive(true);
+  return deviceIds.map((deviceId) => ({ deviceId, success: true }));
+}
+
+// ─── Dry-stop: one gateway, no swallowed PATCH errors (failed restore must retry or abort) ─
+
+async function dryStopSingleDevice(
+  client: DaikinClient,
+  deviceId: string,
+  restoreStore: DeviceRestoreStore,
+): Promise<void> {
+  const snap = await restoreStore.load(deviceId);
+  if (snap && snap.entries.length > 0) {
+    const ordered = sortSnapshotEntriesForRestore(snap.entries);
+    for (const e of ordered) {
+      await client.patchCharacteristic(
+        deviceId,
+        e.mpSlug,
+        e.characteristicKey,
+        e.value,
+      );
+    }
+    await restoreStore.delete(deviceId);
+    const rawAfterRestore = await client.getGatewayDeviceRaw(deviceId);
+    const state = client.parseGatewayPayload(rawAfterRestore);
+    if (state.operationMode === 'dry') {
+      logger.warn({ deviceId }, 'Still in dry after restore — applying heat fallback');
+      await client.setOperationMode(deviceId, 'heating' as OperationMode, rawAfterRestore);
+      await client.setTemperature(deviceId, config.heatTargetTempC, rawAfterRestore);
+    }
+  } else {
+    logger.error({ deviceId }, 'No restore snapshot — applying heat fallback');
+    const rawFallback = await client.getGatewayDeviceRaw(deviceId);
+    await client.setOperationMode(deviceId, 'heating' as OperationMode, rawFallback);
+    await client.setTemperature(deviceId, config.heatTargetTempC, rawFallback);
+  }
 }
 
 // ─── Dry-stop logic (shared between direct and humidity-triggered paths) ──────
+// Every head must complete (with transient retries); otherwise throws — no partial success JSON.
 
 async function executeDryStop(
   client: DaikinClient,
@@ -152,67 +159,13 @@ async function executeDryStop(
   deviceIds: string[],
   restoreStore: DeviceRestoreStore,
 ): Promise<DeviceResult[]> {
-  // One device at a time: each dry-stop issues many restore PATCHes; parallel chains still
-  // serialized HTTP-wise but sequential end-to-end keeps Onecta + Firestore work ordered
-  // and pairs with DAIKIN_HTTP_PACE_MS between every gated call (see daikin.ts).
-  const mapped: DeviceResult[] = [];
   for (const deviceId of deviceIds) {
-    try {
-      const snap = await restoreStore.load(deviceId);
-      if (snap && snap.entries.length > 0) {
-        const ordered = sortSnapshotEntriesForRestore(snap.entries);
-        for (const e of ordered) {
-          try {
-            await client.patchCharacteristic(
-              deviceId,
-              e.mpSlug,
-              e.characteristicKey,
-              e.value,
-            );
-          } catch (patchErr) {
-            const msg = patchErr instanceof Error ? patchErr.message : String(patchErr);
-            logger.error(
-              {
-                deviceId,
-                mpSlug: e.mpSlug,
-                characteristicKey: e.characteristicKey,
-                error: msg,
-              },
-              'Restore PATCH failed',
-            );
-          }
-        }
-        await restoreStore.delete(deviceId);
-        const rawAfterRestore = await client.getGatewayDeviceRaw(deviceId);
-        const state = client.parseGatewayPayload(rawAfterRestore);
-        if (state.operationMode === 'dry') {
-          logger.warn({ deviceId }, 'Still in dry after restore — applying heat fallback');
-          await client.setOperationMode(deviceId, 'heating' as OperationMode, rawAfterRestore);
-          await client.setTemperature(deviceId, config.heatTargetTempC, rawAfterRestore);
-        }
-      } else {
-        logger.error({ deviceId }, 'No restore snapshot — applying heat fallback');
-        const rawFallback = await client.getGatewayDeviceRaw(deviceId);
-        await client.setOperationMode(deviceId, 'heating' as OperationMode, rawFallback);
-        await client.setTemperature(deviceId, config.heatTargetTempC, rawFallback);
-      }
-      mapped.push({ deviceId, success: true });
-    } catch (err) {
-      const error = err instanceof Error ? err.message : String(err);
-      logger.error({ deviceId, error }, 'dry-stop failed for device');
-      mapped.push({ deviceId, success: false, error });
-    }
+    await runWithGatewayDeviceRetries('dry-stop', deviceId, async () => {
+      await dryStopSingleDevice(client, deviceId, restoreStore);
+    });
   }
-
-  if (mapped.every((r) => r.success)) {
-    humidityFsm.setActive(false);
-  } else {
-    logger.error(
-      { failed: mapped.filter((r) => !r.success).length, total: mapped.length },
-      'dry-stop partial failure — leaving humidity FSM active',
-    );
-  }
-  return mapped;
+  humidityFsm.setActive(false);
+  return deviceIds.map((deviceId) => ({ deviceId, success: true }));
 }
 
 // ─── Router factory ───────────────────────────────────────────────────────────
@@ -318,27 +271,32 @@ export function createRouter(
     logger.info({ task: TASK_DRY_START, devices: deviceIds }, 'Starting dry cycle');
 
     try {
-      const results = await executeDryStart(
-        client,
-        humidityFsm,
-        deviceIds,
-        restoreStore,
-        preflight.raws,
-      );
-      const succeeded = results.filter((r) => r.success).length;
+      const results = await executeDryStart(client, humidityFsm, deviceIds, restoreStore);
       logger.info(
-        { task: TASK_DRY_START, succeeded, total: results.length },
+        { task: TASK_DRY_START, succeeded: results.length, total: results.length },
         'Dry cycle started',
       );
       void notifyTaskOutcome(config, {
         taskName: TASK_DRY_START,
         devicesTotal: results.length,
-        devicesSucceeded: succeeded,
+        devicesSucceeded: results.length,
       });
-      res.status(200).json({ success: true, devicesControlled: succeeded, results });
+      res.status(200).json({ success: true, devicesControlled: results.length, results });
     } catch (err) {
-      logger.error({ task: TASK_DRY_START, err }, 'Unexpected error in dry-start');
-      res.status(500).json({ error: 'Internal error' });
+      const message = err instanceof Error ? err.message : String(err);
+      logger.error({ task: TASK_DRY_START, err }, 'dry-start did not complete on all gateway devices');
+      void notifyTaskOutcome(config, {
+        taskName: TASK_DRY_START,
+        devicesTotal: deviceIds.length,
+        devicesSucceeded: 0,
+        subjectOverride: `[Daikin humidity] dry-start: FAILED (${deviceIds.length} heads — see logs)`,
+        detail: message,
+      });
+      res.status(500).json({
+        success: false,
+        error: 'dry-start did not complete on all gateway devices',
+        message,
+      });
     }
   });
 
@@ -422,20 +380,31 @@ export function createRouter(
 
     try {
       const results = await executeDryStop(client, humidityFsm, deviceIds, restoreStore);
-      const succeeded = results.filter((r) => r.success).length;
       logger.info(
-        { task: TASK_DRY_STOP, succeeded, total: results.length },
+        { task: TASK_DRY_STOP, succeeded: results.length, total: results.length },
         'Dry cycle stopped (restored or fallback heat)',
       );
       void notifyTaskOutcome(config, {
         taskName: TASK_DRY_STOP,
         devicesTotal: results.length,
-        devicesSucceeded: succeeded,
+        devicesSucceeded: results.length,
       });
-      res.status(200).json({ success: true, devicesControlled: succeeded, results });
+      res.status(200).json({ success: true, devicesControlled: results.length, results });
     } catch (err) {
-      logger.error({ task: TASK_DRY_STOP, err }, 'Unexpected error in dry-stop');
-      res.status(500).json({ error: 'Internal error' });
+      const message = err instanceof Error ? err.message : String(err);
+      logger.error({ task: TASK_DRY_STOP, err }, 'dry-stop did not complete on all gateway devices');
+      void notifyTaskOutcome(config, {
+        taskName: TASK_DRY_STOP,
+        devicesTotal: deviceIds.length,
+        devicesSucceeded: 0,
+        subjectOverride: `[Daikin humidity] dry-stop: FAILED (${deviceIds.length} heads — see logs)`,
+        detail: message,
+      });
+      res.status(500).json({
+        success: false,
+        error: 'dry-stop did not complete on all gateway devices',
+        message,
+      });
     }
   });
 
@@ -458,16 +427,6 @@ export function createRouter(
   // ── POST /tasks/check-humidity ──────────────────────────────────────────────
   router.post('/tasks/check-humidity', async (_req: Request, res: Response) => {
     if (respondIfAutomationDisabled(res, TASK_CHECK_HUMIDITY)) return;
-    if (config.modeStrategy !== 'humidity') {
-      logger.info(
-        { modeStrategy: config.modeStrategy },
-        'check-humidity called but MODE_STRATEGY is not humidity — skipping',
-      );
-      const body = { skipped: true, reason: 'mode-strategy-is-timer' };
-      emailCheckHumiditySummary(0, 0, body);
-      res.status(200).json(body);
-      return;
-    }
 
     if (!idempotency.checkAndMark(TASK_CHECK_HUMIDITY)) {
       logger.info(
@@ -599,23 +558,29 @@ export function createRouter(
           res.status(200).json(body);
           return;
         }
-        const startResults = await executeDryStart(
-          client,
-          humidityFsm,
-          deviceIds,
-          restoreStore,
-          startPreflight.raws,
-        );
-        const startOk = startResults.filter((r) => r.success).length;
-        const body = {
-          action: decision,
-          humidity: maxHumidity,
-          thresholds,
-          dryStartDevicesSucceeded: startOk,
-          dryStartDevicesTotal: startResults.length,
-        };
-        emailCheckHumiditySummary(deviceIds.length, humidityReadings.length, body);
-        res.status(200).json(body);
+        try {
+          await executeDryStart(client, humidityFsm, deviceIds, restoreStore);
+          const body = {
+            action: decision,
+            humidity: maxHumidity,
+            thresholds,
+            dryStartDevicesSucceeded: deviceIds.length,
+            dryStartDevicesTotal: deviceIds.length,
+          };
+          emailCheckHumiditySummary(deviceIds.length, humidityReadings.length, body);
+          res.status(200).json(body);
+        } catch (startErr) {
+          const message = startErr instanceof Error ? startErr.message : String(startErr);
+          logger.error({ task: TASK_CHECK_HUMIDITY, err: startErr }, 'Humidity-triggered dry-start failed');
+          const body = {
+            action: 'start-failed',
+            humidity: maxHumidity,
+            thresholds,
+            error: message,
+          };
+          emailCheckHumiditySummary(deviceIds.length, humidityReadings.length, body);
+          res.status(500).json(body);
+        }
         return;
       }
 
@@ -651,17 +616,29 @@ export function createRouter(
           res.status(200).json(body);
           return;
         }
-        const stopResults = await executeDryStop(client, humidityFsm, deviceIds, restoreStore);
-        const stopOk = stopResults.filter((r) => r.success).length;
-        const body = {
-          action: decision,
-          humidity: maxHumidity,
-          thresholds,
-          dryStopDevicesSucceeded: stopOk,
-          dryStopDevicesTotal: stopResults.length,
-        };
-        emailCheckHumiditySummary(deviceIds.length, humidityReadings.length, body);
-        res.status(200).json(body);
+        try {
+          await executeDryStop(client, humidityFsm, deviceIds, restoreStore);
+          const body = {
+            action: decision,
+            humidity: maxHumidity,
+            thresholds,
+            dryStopDevicesSucceeded: deviceIds.length,
+            dryStopDevicesTotal: deviceIds.length,
+          };
+          emailCheckHumiditySummary(deviceIds.length, humidityReadings.length, body);
+          res.status(200).json(body);
+        } catch (stopErr) {
+          const message = stopErr instanceof Error ? stopErr.message : String(stopErr);
+          logger.error({ task: TASK_CHECK_HUMIDITY, err: stopErr }, 'Humidity-triggered dry-stop failed');
+          const body = {
+            action: 'stop-failed',
+            humidity: maxHumidity,
+            thresholds,
+            error: message,
+          };
+          emailCheckHumiditySummary(deviceIds.length, humidityReadings.length, body);
+          res.status(500).json(body);
+        }
         return;
       }
 

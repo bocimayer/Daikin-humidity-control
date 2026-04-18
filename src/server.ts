@@ -73,7 +73,6 @@ const server = app.listen(config.port, () => {
     {
       port: config.port,
       nodeEnv: config.nodeEnv,
-      modeStrategy: config.modeStrategy,
       automationEnabled: config.automationEnabled,
       deviceSource: 'onecta-gateway-list',
       tokenStore: refreshTokenStore.describe(),

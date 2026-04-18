@@ -2,13 +2,16 @@
 # =============================================================================
 # create-scheduler-jobs.sh — Create Cloud Scheduler jobs after first deploy.
 #
+# Automation is humidity-driven: /tasks/check-humidity on a schedule plus a
+# nightly /tasks/dry-stop safety job. Legacy timer jobs (daikin-dry-start,
+# daikin-dry-stop) are removed if present.
+#
 # Run AFTER bootstrap.sh and after the first successful GitHub Actions deploy
 # (you need the Cloud Run service URL, which only exists post-deploy).
 #
 # Usage:
 #   export PROJECT_ID=your-gcp-project-id
 #   export REGION=europe-central2
-#   export MODE_STRATEGY=timer        # or: humidity
 #   export TIME_ZONE="Europe/Budapest"
 #   bash setup/create-scheduler-jobs.sh
 # =============================================================================
@@ -17,7 +20,6 @@ set -euo pipefail
 
 : "${PROJECT_ID:=tihany-daikin-humidity}"
 : "${REGION:=europe-central2}"
-: "${MODE_STRATEGY:=timer}"
 : "${TIME_ZONE:=Europe/Budapest}"
 
 SERVICE_NAME="daikin-humidity-control"
@@ -80,51 +82,32 @@ upsert_job() {
   fi
 }
 
-# ── Create jobs based on selected strategy ────────────────────────────────────
-if [ "$MODE_STRATEGY" = "timer" ]; then
-  echo "Creating Option A (timer-only) jobs..."
+# ── Remove legacy fixed-time jobs if present ──────────────────────────────────
+echo "Removing legacy timer-only jobs if present..."
+for obsolete in daikin-dry-start daikin-dry-stop; do
+  if gcloud scheduler jobs describe "$obsolete" \
+       --location="$REGION" --project="$PROJECT_ID" &>/dev/null; then
+    echo "  Deleting obsolete job: ${obsolete}"
+    gcloud scheduler jobs delete "$obsolete" \
+      --location="$REGION" --project="$PROJECT_ID" --quiet
+  fi
+done
 
-  # Adjust cron times to suit your schedule.
-  upsert_job "daikin-dry-start" "0 9 * * *"  "${SERVICE_URL}/tasks/dry-start"
-  upsert_job "daikin-dry-stop"  "0 11 * * *" "${SERVICE_URL}/tasks/dry-stop"
+echo "Creating humidity automation jobs..."
 
-  echo ""
-  echo "Timer jobs created:"
-  echo "  09:00 → /tasks/dry-start  (switches all units to DRY)"
-  echo "  11:00 → /tasks/dry-stop   (reverts to HEAT @ frost-protection setpoint)"
+# Poll every 3 hours (8 calls/day per leader device — stays within quota).
+upsert_job "daikin-check-humidity"  "0 */3 * * *" "${SERVICE_URL}/tasks/check-humidity"
+upsert_job "daikin-dry-stop-safety" "0 0 * * *"   "${SERVICE_URL}/tasks/dry-stop"
 
-elif [ "$MODE_STRATEGY" = "humidity" ]; then
-  echo "Option B (humidity): removing fixed-time dry-start/dry-stop if present — hysteresis runs via check-humidity."
-  for obsolete in daikin-dry-start daikin-dry-stop; do
-    if gcloud scheduler jobs describe "$obsolete" \
-         --location="$REGION" --project="$PROJECT_ID" &>/dev/null; then
-      echo "  Deleting obsolete job: ${obsolete}"
-      gcloud scheduler jobs delete "$obsolete" \
-        --location="$REGION" --project="$PROJECT_ID" --quiet
-    fi
-  done
-
-  echo "Creating Option B (humidity-aware) jobs..."
-
-  # Poll every 3 hours (8 calls/day per leader device — stays within quota).
-  upsert_job "daikin-check-humidity"  "0 */3 * * *" "${SERVICE_URL}/tasks/check-humidity"
-  upsert_job "daikin-dry-stop-safety" "0 0 * * *"   "${SERVICE_URL}/tasks/dry-stop"
-
-  echo ""
-  echo "Humidity-aware jobs created:"
-  echo "  Every 3 h → /tasks/check-humidity  (hysteresis FSM decides start/stop)"
-  echo "  00:00     → /tasks/dry-stop         (safety stop — ensures nightly revert)"
-
-else
-  echo "ERROR: Unknown MODE_STRATEGY '${MODE_STRATEGY}'. Use 'timer' or 'humidity'."
-  exit 1
-fi
-
+echo ""
+echo "Jobs created:"
+echo "  Every 3 h → /tasks/check-humidity  (hysteresis FSM decides start/stop)"
+echo "  00:00     → /tasks/dry-stop         (safety stop — ensures nightly revert)"
 echo ""
 echo "=== Scheduler jobs ready. ==="
 echo ""
 echo "Test a job manually:"
-echo "  gcloud scheduler jobs run daikin-dry-stop --location=${REGION} --project=${PROJECT_ID}"
+echo "  gcloud scheduler jobs run daikin-check-humidity --location=${REGION} --project=${PROJECT_ID}"
 echo ""
 echo "Tail Cloud Run logs:"
 echo "  gcloud run services logs tail ${SERVICE_NAME} --region=${REGION} --project=${PROJECT_ID}"

@@ -45,36 +45,23 @@ Secrets/state:
 
 | Scenario | Calls/day |
 |---|---|
-| Option A, 4 devices, 1 cycle | ~10 |
-| Option B, 2 devices, 8 polls | ~18 |
-| Option B, 4 devices, 8 polls | ~24 |
+| 4 devices, 1 manual dry cycle (dry-start + dry-stop) | ~10 |
+| 2 devices, 8 check-humidity polls/day | ~18 |
+| 4 devices, 8 polls/day | ~24 |
 
-Poll no more than every 3 hours with humidity strategy to stay safe.
+Poll no more than every 3 hours on `/tasks/check-humidity` to stay within quota.
 
 ---
 
-## Operating modes
+## Humidity automation (only model)
 
-### Option A — Timer-only
+Cloud Scheduler calls **`POST /tasks/check-humidity`** on a fixed cadence (for example every 3 hours). The hysteresis FSM compares **max(RH)** across heads to **`HUMIDITY_HIGH_THRESHOLD`** / **`HUMIDITY_LOW_THRESHOLD`** and decides whether to invoke the same dry-start / dry-stop logic the service uses everywhere else.
 
-Cloud Scheduler calls `/tasks/dry-start` at a fixed time and
-`/tasks/dry-stop` N minutes later. No humidity reading occurs.
-Set `MODE_STRATEGY=timer`.
+**`POST /tasks/dry-start`** and **`POST /tasks/dry-stop`** remain OIDC endpoints for **manual runs**, safety jobs, and internal use after `check-humidity` decides — not a separate “timer product mode.”
 
 **Multi indoor / one outdoor:** before any Onecta writes, the service reads every gateway device and requires **one shared `operationMode`** across heads. **Dry-start** is allowed from **any** homogeneous mode **except `cooling`** — in cooling the compressor already dehumidifies, so we do not stack an explicit DRY. **`fanOnly`**, **`heating`**, **`auto`**, etc. are all valid baselines when every head matches. If heads disagree, the task returns **`200`** with `{ "skipped": true, "reason": "…", "modesByDeviceId": {…} }` and does **not** call idempotency for that attempt.
 
-```
-[09:00] Scheduler → POST /tasks/dry-start  → preflight → all units → DRY (snapshot of settable Onecta characteristics saved first)
-[11:00] Scheduler → POST /tasks/dry-stop   → preflight (all must report dry) → replay snapshot; if missing or still in DRY → HEAT @ HEAT_TARGET_TEMP_C
-```
-
-### Option B — Humidity-aware
-
-Cloud Scheduler polls `/tasks/check-humidity` every few hours.
-The hysteresis FSM decides whether to start or stop a dry cycle.
-Set `MODE_STRATEGY=humidity`.
-
-**Cluster gate:** same **homogeneous mode** rules as timer dry-start apply before RH is used (no mixed dry, no unknown `operationMode`). **Humidity** for the decision is the **maximum** of non-null % RH readings **only from heads that actually returned a value** in the Onecta payload (`sensoryData` in `daikin.ts`). In real rooms, **whether a powered-down or idle wall unit still publishes indoor RH** depends on that model and what Onecta returns — if RH is `null`, that head does not contribute to max(RH). Use **`npm run daikin:humidity-snapshot`** (read-only live script; set `DOTENV_CONFIG_PATH` to your real `.env` if it is not in the repo) to see `operationMode` and `humidity` per device. If **no** head returns humidity, the handler returns `no-humidity-data`. A humidity **start** still requires **dry-start preflight** (homogeneous, not all `cooling`). A humidity **stop** requires **every** head to report **`dry`** before `dry-stop` runs.
+**Cluster gate:** the same **homogeneous mode** rules apply before RH is used (no mixed dry, no unknown `operationMode`). **Humidity** for the decision is the **maximum** of non-null % RH readings **only from heads that actually returned a value** in the Onecta payload (`sensoryData` in `daikin.ts`). In real rooms, **whether a powered-down or idle wall unit still publishes indoor RH** depends on that model and what Onecta returns — if RH is `null`, that head does not contribute to max(RH). Use **`npm run daikin:humidity-snapshot`** (read-only live script; set `DOTENV_CONFIG_PATH` to your real `.env` if it is not in the repo) to see `operationMode` and `humidity` per device. If **no** head returns humidity, the handler returns `no-humidity-data`. A **start** still requires **dry-start preflight** (homogeneous, not all `cooling`). A **stop** requires **every** head to report **`dry`** before `dry-stop` runs.
 
 ```
 [every 3 h] Scheduler → POST /tasks/check-humidity
@@ -85,7 +72,7 @@ Set `MODE_STRATEGY=humidity`.
 [00:00] Scheduler → POST /tasks/dry-stop  (safety stop — still runs preflight; may skip if cluster not all-dry)
 ```
 
-**Switch an already-deployed Cloud Run service from timer to humidity (GCP + Scheduler):** from repo root, with `gcloud` authenticated and `PROJECT_ID` / `REGION` set, run **`bash setup/apply-humidity-strategy-to-cloud.sh`** — it sets **`MODE_STRATEGY=humidity`** on the service and runs **`setup/create-scheduler-jobs.sh`**, which **deletes** obsolete **`daikin-dry-start`** / **`daikin-dry-stop`** timer jobs and **upserts** **`daikin-check-humidity`** plus the nightly **`daikin-dry-stop-safety`** job.
+**Scheduler setup:** from repo root, with `gcloud` authenticated and `PROJECT_ID` / `REGION` set, run **`bash setup/create-scheduler-jobs.sh`**. It removes legacy **`daikin-dry-start`** / **`daikin-dry-stop`** timer jobs if they exist and **upserts** **`daikin-check-humidity`** plus **`daikin-dry-stop-safety`**.
 
 **Mail test:** `POST /tasks/notify-test` with the same OIDC token as other `/tasks/*` routes (see `docs/PRODUCTION_SETUP.md`). Successful dry-start, dry-stop, and every check-humidity outcome also trigger mail when Gmail notify env vars are set.
 
@@ -109,9 +96,8 @@ Set `MODE_STRATEGY=humidity`.
 | `DAIKIN_RESTORE_COLLECTION` | no | `device_restore_state` | Firestore collection for per-device snapshots of settable Onecta characteristics (capture before DRY, replay on dry-stop) |
 | `DRY_DURATION_MINUTES` | no | `120` | Informational — used to space Scheduler jobs |
 | `HEAT_TARGET_TEMP_C` | no | `16` | Frost-protection setpoint when dry-stop **cannot** restore from snapshot (fallback if snapshot missing or unit still in DRY after replay) |
-| `HUMIDITY_HIGH_THRESHOLD` | no | `70` | % RH — with humidity strategy, **max** reading across devices at/above this starts dry (when not already in dry cycle) |
-| `HUMIDITY_LOW_THRESHOLD` | no | `60` | % RH — with humidity strategy, **max** reading at/below this stops dry (when in dry cycle) |
-| `MODE_STRATEGY` | no | `humidity` | `timer` or `humidity` (GitHub Actions deploy defaults to **humidity** when the secret is unset) |
+| `HUMIDITY_HIGH_THRESHOLD` | no | `70` | % RH — **max** reading across devices at/above this starts dry (when not already in dry cycle) |
+| `HUMIDITY_LOW_THRESHOLD` | no | `60` | % RH — **max** reading at/below this stops dry (when in dry cycle) |
 | `LOG_LEVEL` | no | `info` | `trace` `debug` `info` `warn` `error` `fatal` |
 | `AUTOMATION_ENABLED` | no | `true` | Master switch: `false` / `0` / `off` / `disabled` skips `dry-start`, `dry-stop`, and `check-humidity` (still logs). Change via Cloud Run env / Secret Manager — not a public URL. |
 | `DAIKIN_WRITE_CONCURRENCY` | no | `1` | Max concurrent Onecta **gateway** HTTP calls (GET+PATCH) per process (`1`–`3`). Default `1` serializes all Onecta traffic. |
@@ -273,7 +259,6 @@ After running bootstrap.sh, add the printed secrets to the GitHub **Environment*
 | `HEAT_TARGET_TEMP_C` *(optional)* | `16` |
 | `HUMIDITY_HIGH_THRESHOLD` *(optional)* | `70` |
 | `HUMIDITY_LOW_THRESHOLD` *(optional)* | `60` |
-| `MODE_STRATEGY` *(optional)* | `humidity` (set to `timer` explicitly for fixed-clock jobs only) |
 | `DRY_DURATION_MINUTES` *(optional)* | `120` |
 | `LOG_LEVEL` *(optional)* | `info` |
 | `AUTOMATION_ENABLED` *(optional)* | `true` — set `false` to no-op Onecta tasks without redeploying code |
@@ -301,7 +286,6 @@ For a manual trigger: **Actions → Deploy to Cloud Run → Run workflow**.
 ```bash
 export PROJECT_ID=your-gcp-project-id
 export REGION=europe-central2
-export MODE_STRATEGY=timer           # or: humidity
 export TIME_ZONE="Europe/Budapest"
 
 bash setup/create-scheduler-jobs.sh
@@ -389,7 +373,6 @@ gcloud run deploy $SERVICE_NAME \
 HEAT_TARGET_TEMP_C=16,\
 HUMIDITY_HIGH_THRESHOLD=70,\
 HUMIDITY_LOW_THRESHOLD=60,\
-MODE_STRATEGY=timer,\
 LOG_LEVEL=info,\
 DAIKIN_TOKEN_STORE=firestore,\
 DAIKIN_FIRESTORE_COLLECTION=oauth_tokens,\
@@ -438,42 +421,9 @@ gcloud run services add-iam-policy-binding $SERVICE_NAME \
 
 ### 7 — Create Cloud Scheduler jobs
 
-#### Option A — Timer-only
+Prefer **`bash setup/create-scheduler-jobs.sh`** (same OIDC wiring as below, deletes legacy timer jobs). Manual equivalent:
 
 ```bash
-# Dry start at 09:00 every day
-gcloud scheduler jobs create http daikin-dry-start \
-  --location=$REGION \
-  --schedule="0 9 * * *" \
-  --time-zone="Europe/Budapest" \
-  --uri="${SERVICE_URL}/tasks/dry-start" \
-  --http-method=POST \
-  --oidc-service-account-email="${SCHEDULER_SA}@${PROJECT_ID}.iam.gserviceaccount.com" \
-  --oidc-token-audience="${SERVICE_URL}" \
-  --project=$PROJECT_ID
-
-# Dry stop at 11:00 every day (2 hours later)
-gcloud scheduler jobs create http daikin-dry-stop \
-  --location=$REGION \
-  --schedule="0 11 * * *" \
-  --time-zone="Europe/Budapest" \
-  --uri="${SERVICE_URL}/tasks/dry-stop" \
-  --http-method=POST \
-  --oidc-service-account-email="${SCHEDULER_SA}@${PROJECT_ID}.iam.gserviceaccount.com" \
-  --oidc-token-audience="${SERVICE_URL}" \
-  --project=$PROJECT_ID
-```
-
-#### Option B — Humidity-aware
-
-Switch the deployed service to `MODE_STRATEGY=humidity` first:
-
-```bash
-gcloud run services update $SERVICE_NAME \
-  --region=$REGION \
-  --update-env-vars="MODE_STRATEGY=humidity" \
-  --project=$PROJECT_ID
-
 # Poll humidity every 3 hours
 gcloud scheduler jobs create http daikin-check-humidity \
   --location=$REGION \
@@ -501,7 +451,7 @@ gcloud scheduler jobs create http daikin-dry-stop-safety \
 
 ```bash
 # Manual trigger (uses your own identity, not the scheduler SA)
-gcloud scheduler jobs run daikin-dry-stop --location=$REGION --project=$PROJECT_ID
+gcloud scheduler jobs run daikin-check-humidity --location=$REGION --project=$PROJECT_ID
 
 # Tail logs
 gcloud run services logs tail $SERVICE_NAME --region=$REGION --project=$PROJECT_ID
@@ -521,10 +471,9 @@ Each call type costs:
 - `setOperationMode` / `setTemperature` per device as needed
 
 **Conservative rules:**
-- In **humidity mode**: poll no more than every 2–3 hours (8 polls/day).
+- Poll **`check-humidity`** no more than every 2–3 hours (8 polls/day).
   - With N devices: list (1) + N sequential raw reads per poll, plus pace delay between each; dry actions add PATCH volume. Re-tune schedule if tight on quota or you see `429` in logs.
-- In **timer mode**: preflight adds N GETs before dry-start; dry-start/dry-stop PATCH counts depend on snapshot size.
-  - If `dry-stop` fails with `429`, heads can drift out of sync — deploy pacing and fix scheduler spacing; align all heads manually if needed.
+- Manual **`dry-start` / `dry-stop`**: preflight adds N GETs before dry-start; PATCH counts depend on snapshot size. If `dry-stop` fails with `429`, heads can drift out of sync — deploy pacing and widen scheduler spacing; align all heads manually if needed.
 - Always set `DRY_DURATION_MINUTES` generously so one long cycle beats several short ones.
 - The access token is cached in memory; it costs only 1 refresh call per container cold start or token expiry (~1 h).
 

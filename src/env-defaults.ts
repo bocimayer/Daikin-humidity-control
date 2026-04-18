@@ -12,7 +12,6 @@ export const DEFAULT_DRY_DURATION_MINUTES = 120;
 export const DEFAULT_HEAT_TARGET_TEMP_C = 16;
 export const DEFAULT_HUMIDITY_HIGH_THRESHOLD = 70;
 export const DEFAULT_HUMIDITY_LOW_THRESHOLD = 60;
-export const DEFAULT_MODE_STRATEGY = 'timer' as const;
 export const DEFAULT_LOG_LEVEL = 'info' as const;
 /** Max concurrent Onecta gateway HTTP calls (GET+PATCH) per process (1 = strict serialization). */
 export const DEFAULT_DAIKIN_WRITE_CONCURRENCY = 1;

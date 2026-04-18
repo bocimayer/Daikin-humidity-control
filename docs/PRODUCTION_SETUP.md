@@ -32,7 +32,7 @@ Two things evolved at different speeds:
 Must exist with secrets used by workflows (names only; values in GitHub UI):
 
 - `GCP_PROJECT_ID`, `GCP_REGION`, `GCP_WORKLOAD_IDENTITY_PROVIDER`, `GCP_DEPLOY_SA`
-- Optional tuning: `HEAT_TARGET_TEMP_C`, `HUMIDITY_HIGH_THRESHOLD`, `HUMIDITY_LOW_THRESHOLD`, `MODE_STRATEGY`, `DRY_DURATION_MINUTES`, `LOG_LEVEL`, `AUTOMATION_ENABLED`, `DAIKIN_WRITE_CONCURRENCY`, `DAIKIN_HTTP_PACE_MS`
+- Optional tuning: `HEAT_TARGET_TEMP_C`, `HUMIDITY_HIGH_THRESHOLD`, `HUMIDITY_LOW_THRESHOLD`, `DRY_DURATION_MINUTES`, `LOG_LEVEL`, `AUTOMATION_ENABLED`, `DAIKIN_WRITE_CONCURRENCY`, `DAIKIN_HTTP_PACE_MS`
 
 **Remove after next successful deploy** (no longer read by the app):
 

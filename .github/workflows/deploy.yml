@@ -29,7 +29,6 @@ env:
   #   HEAT_TARGET_TEMP_C                default: 16
   #   HUMIDITY_HIGH_THRESHOLD           default: 70
   #   HUMIDITY_LOW_THRESHOLD            default: 60
-  #   MODE_STRATEGY                     default: humidity (override with secret for timer-only)
   #   DRY_DURATION_MINUTES              default: 120
   #   LOG_LEVEL                         default: info
   #   AUTOMATION_ENABLED                default: true (set false/0/off/disabled to skip dry-start, dry-stop, check-humidity)
@@ -114,7 +113,6 @@ jobs:
           HEAT_TARGET_TEMP_C: ${{ secrets.HEAT_TARGET_TEMP_C || '16' }}
           HUMIDITY_HIGH_THRESHOLD: ${{ secrets.HUMIDITY_HIGH_THRESHOLD || '70' }}
           HUMIDITY_LOW_THRESHOLD: ${{ secrets.HUMIDITY_LOW_THRESHOLD || '60' }}
-          MODE_STRATEGY: ${{ secrets.MODE_STRATEGY || 'humidity' }}
           DRY_DURATION_MINUTES: ${{ secrets.DRY_DURATION_MINUTES || '120' }}
           LOG_LEVEL: ${{ secrets.LOG_LEVEL || 'info' }}
           DAIKIN_RESTORE_COLLECTION: ${{ secrets.DAIKIN_RESTORE_COLLECTION || 'device_restore_state' }}
@@ -154,7 +152,6 @@ jobs:
               ("HEAT_TARGET_TEMP_C", os.environ["HEAT_TARGET_TEMP_C"]),
               ("HUMIDITY_HIGH_THRESHOLD", os.environ["HUMIDITY_HIGH_THRESHOLD"]),
               ("HUMIDITY_LOW_THRESHOLD", os.environ["HUMIDITY_LOW_THRESHOLD"]),
-              ("MODE_STRATEGY", os.environ["MODE_STRATEGY"]),
               ("DRY_DURATION_MINUTES", os.environ["DRY_DURATION_MINUTES"]),
               ("LOG_LEVEL", os.environ["LOG_LEVEL"]),
               ("DAIKIN_RESTORE_COLLECTION", os.environ.get("DAIKIN_RESTORE_COLLECTION", "device_restore_state")),
