@@ -21,6 +21,7 @@ All notable changes to this project are documented in this file. The format is b
 - **`HumidityStateMachine.evaluate`** is **pure**; `setActive(true|false)` runs only after **full** dry-start / dry-stop success so the FSM cannot desync from the plant (`README.md`, `tests/hysteresis.test.ts`).
 - **Dry-start / dry-stop / check-humidity**: preflight runs **before** idempotency for timer dry-start/stop where applicable; sequential gateway reads for cluster checks (`README.md`).
 - **Notifications:** optional **`subjectOverride`** on task notify payloads; **mail on every** `check-humidity`, **dry-start**, and **dry-stop** outcome (including skips); **`create-scheduler-jobs.sh`** deletes timer **`daikin-dry-start`** / **`daikin-dry-stop`** when switching to **humidity** mode (`src/task-notify.ts`, `src/routes.ts`, `setup/`).
+- **GitHub Actions deploy:** default **`MODE_STRATEGY`** is **`humidity`** when the **`MODE_STRATEGY`** repository/environment secret is unset (set the secret to **`timer`** explicitly for fixed-clock dry cycles only) (`.github/workflows/deploy.yml`).
 
 ### Fixed
 
