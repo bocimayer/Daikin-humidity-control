@@ -221,7 +221,7 @@ export function createRouter(
           reason: preflight.reason,
           modesByDeviceId: preflight.modesByDeviceId,
         },
-        'Dry-start preflight blocked — cluster must share one mode and only heating/fanOnly may enter dry',
+        'Dry-start preflight blocked — cluster must share one mode; dry is blocked only in cooling (already dehumidifies)',
       );
       res.status(200).json({
         skipped: true,
@@ -418,12 +418,12 @@ export function createRouter(
           humidityReadings.push(row.humidity);
           logger.info(
             { deviceId: row.deviceId, humidity: row.humidity, operationMode: row.mode },
-            'Humidity reading (sensoryData is independent of mode in our parser; null means API omitted RH)',
+            'Humidity reading (real installs: whether a head sends RH while idle depends on that model and Onecta payload)',
           );
         } else {
           logger.warn(
             { deviceId: row.deviceId, operationMode: row.mode },
-            'Device returned no humidity value (fan/off heads may still report RH depending on model)',
+            'No indoor RH from Onecta for this head — it will not contribute to max(RH) until the device reports a value (common when not actively conditioning)',
           );
         }
       }
@@ -467,7 +467,7 @@ export function createRouter(
               reason: startPreflight.reason,
               modesByDeviceId: startPreflight.modesByDeviceId,
             },
-            'Humidity start blocked by dry-start policy (heating/fanOnly only, single shared mode)',
+            'Humidity start blocked by dry-start policy (e.g. all cooling, or cluster rules)',
           );
           res.status(200).json({
             action: 'no-action',

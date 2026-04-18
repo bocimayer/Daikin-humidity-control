@@ -200,6 +200,9 @@ Optional runtime tuning:
 - `DRY_DURATION_MINUTES`
 - `LOG_LEVEL`
 - `DAIKIN_RESTORE_COLLECTION` (Firestore collection for pre-dry Onecta snapshots; default `device_restore_state`)
+- `AUTOMATION_ENABLED` (`true` by default; `false` / `0` / `off` / `disabled` skips `dry-start`, `dry-stop`, `check-humidity`)
+- `DAIKIN_WRITE_CONCURRENCY` (default `1`, max `3` — cap concurrent Onecta gateway GET+PATCH)
+- `DAIKIN_HTTP_PACE_MS` (default `75`; `0` disables pacing between gated Onecta calls — mitigates Daikin `429` on large restores)
 
 Optional notifications (set on GitHub Environment `gcp` if you use them; **do not paste refresh tokens into chat** — use **`/guide`** in Cursor for one-step-at-a-time setup):
 
@@ -228,6 +231,9 @@ HUMIDITY_LOW_THRESHOLD=60
 MODE_STRATEGY=timer
 DRY_DURATION_MINUTES=120
 LOG_LEVEL=info
+AUTOMATION_ENABLED=true
+DAIKIN_WRITE_CONCURRENCY=1
+DAIKIN_HTTP_PACE_MS=75
 EXPECTED_AUDIENCE=<Cloud Run service URL>
 NOTIFY_EMAIL=<optional>
 GMAIL_SENDER=<optional>
@@ -301,6 +307,16 @@ All scheduler jobs must:
 - use the scheduler service account
 - set OIDC audience to the Cloud Run service URL
 
+### Multi indoor units / one outdoor (behaviour)
+
+The app assumes **one shared outdoor heat pump** feeding several wall units. It **refuses** to start or stop a dry cycle unless **all** reported gateway heads share compatible states (see `src/dry-cycle-guards.ts`):
+
+- **Dry-start** (timer or humidity-driven): every head must report the **same** `operationMode`; dry is **refused only when that mode is `cooling`** (compressor already dehumidifies). **`fanOnly`**, **`heating`**, **`auto`**, etc. are allowed when homogeneous. Never a **mixed** cluster.
+- **Dry-stop**: every head must still report **`dry`** before restore runs (avoids restoring while one head already left DRY — e.g. after a partial `429` failure).
+- Successful **`dry-start` / `dry-stop`** update the humidity FSM `active` flag; **skipped** or **failed** runs do not pretend the plant changed.
+
+If operators see **`skipped`** with `heterogeneous-operation-modes`, `mixed-dry-state`, or `429` errors in logs, **manually align** all indoor heads to the same mode, then let the next scheduler run retry.
+
 ---
 
 ## Production Validation Checklist
@@ -326,9 +342,10 @@ After deployment, verify all of these:
 ### Daikin integration
 
 - `GET /v1/gateway-devices` works from Cloud Run (device set is dynamic — no env JSON list)
-- read device state works
+- read device state / raw gateway payloads work
 - write one reversible control action works
 - a fresh Cloud Run instance still works after a token refresh
+- optional: `POST /tasks/dry-start` returns `skipped` with `modesByDeviceId` when heads disagree (expected until aligned)
 
 ### Scheduler
 

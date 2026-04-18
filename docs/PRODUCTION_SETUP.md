@@ -32,7 +32,7 @@ Two things evolved at different speeds:
 Must exist with secrets used by workflows (names only; values in GitHub UI):
 
 - `GCP_PROJECT_ID`, `GCP_REGION`, `GCP_WORKLOAD_IDENTITY_PROVIDER`, `GCP_DEPLOY_SA`
-- Optional tuning: `HEAT_TARGET_TEMP_C`, `HUMIDITY_HIGH_THRESHOLD`, `HUMIDITY_LOW_THRESHOLD`, `MODE_STRATEGY`, `DRY_DURATION_MINUTES`, `LOG_LEVEL`
+- Optional tuning: `HEAT_TARGET_TEMP_C`, `HUMIDITY_HIGH_THRESHOLD`, `HUMIDITY_LOW_THRESHOLD`, `MODE_STRATEGY`, `DRY_DURATION_MINUTES`, `LOG_LEVEL`, `AUTOMATION_ENABLED`, `DAIKIN_WRITE_CONCURRENCY`, `DAIKIN_HTTP_PACE_MS`
 
 **Remove after next successful deploy** (no longer read by the app):
 
@@ -150,8 +150,16 @@ Confirm **`daikin-scheduler-sa`** has **`roles/run.invoker`** on `daikin-humidit
 
 ## Phase H — Ongoing operations
 
-- Monitor Cloud Run logs and Daikin daily quota (`README.md` — humidity mode uses more calls per poll because every gateway device is read).  
+- Monitor Cloud Run logs and Daikin daily quota (`README.md` — humidity mode does **sequential** `GET` per gateway device for preflight plus optional pacing; `dry-stop` can issue **many** PATCHes per head).  
+- Watch for **`429`** on Onecta: if `dry-stop` fails completely after a successful `dry-start`, indoor heads can disagree — align them manually, then increase `DAIKIN_HTTP_PACE_MS` or space scheduler jobs (`README.md` env table).  
+- **`skipped`** JSON on `dry-start` / `dry-stop` / `check-humidity` often means **cluster policy** (`heterogeneous-operation-modes`, `mixed-dry-state`, `cooling-already-dehumidifies`, `cluster-not-in-dry`) or **`AUTOMATION_ENABLED`** off — see `src/dry-cycle-guards.ts` and `README.md`. Read-only Onecta snapshot: **`npm run daikin:humidity-snapshot`** (with `DOTENV_CONFIG_PATH` if needed).  
 - Re-auth only if Daikin revokes the app or the refresh token is lost (`DEPLOYMENT_READINESS.md`).
+
+---
+
+## Multi-head / one outdoor (operator summary)
+
+Production frequently has **several indoor gateway devices** on **one** outdoor unit. The service **blocks** automation when reported modes disagree or when every head is in **`cooling`** (dry start refused — cooling already dehumidifies). After incidents, use **`GET /tasks/device-status`** (OIDC) or the Daikin app to confirm **all** heads show the same mode before expecting the next scheduler run to succeed.
 
 ---
 

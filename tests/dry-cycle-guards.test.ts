@@ -1,6 +1,6 @@
 import type { RawDevice } from '../src/daikin';
 import {
-  DRY_ENTRY_SOURCE_MODES,
+  DRY_ENTRY_FORBIDDEN_MODES,
   evaluateDryStartPreflight,
   evaluateDryStopPreflight,
   evaluateHumidityAutomationCluster,
@@ -22,10 +22,10 @@ function rawWithMode(mode: string): RawDevice {
 }
 
 describe('dry-cycle-guards', () => {
-  it('exports dry entry modes heating and fanOnly only', () => {
-    expect(DRY_ENTRY_SOURCE_MODES.has('heating')).toBe(true);
-    expect(DRY_ENTRY_SOURCE_MODES.has('fanOnly')).toBe(true);
-    expect(DRY_ENTRY_SOURCE_MODES.has('cooling')).toBe(false);
+  it('forbids dry entry only from cooling', () => {
+    expect(DRY_ENTRY_FORBIDDEN_MODES.has('cooling')).toBe(true);
+    expect(DRY_ENTRY_FORBIDDEN_MODES.has('heating')).toBe(false);
+    expect(DRY_ENTRY_FORBIDDEN_MODES.has('fanOnly')).toBe(false);
   });
 
   it('evaluateDryStartPreflight rejects heterogeneous modes', () => {
@@ -45,7 +45,17 @@ describe('dry-cycle-guards', () => {
     ]);
     const out = evaluateDryStartPreflight(['a', 'b'], raws);
     expect(out.ok).toBe(false);
-    if (!out.ok) expect(out.reason).toBe('disallowed-source-mode');
+    if (!out.ok) expect(out.reason).toBe('cooling-already-dehumidifies');
+  });
+
+  it('evaluateDryStartPreflight accepts fanOnly when homogeneous', () => {
+    const raws = new Map([
+      ['a', rawWithMode('fanOnly')],
+      ['b', rawWithMode('fanOnly')],
+    ]);
+    const out = evaluateDryStartPreflight(['a', 'b'], raws);
+    expect(out.ok).toBe(true);
+    if (out.ok) expect(out.sharedMode).toBe('fanOnly');
   });
 
   it('evaluateDryStartPreflight accepts homogeneous heating', () => {
@@ -56,6 +66,15 @@ describe('dry-cycle-guards', () => {
     const out = evaluateDryStartPreflight(['a', 'b'], raws);
     expect(out.ok).toBe(true);
     if (out.ok) expect(out.sharedMode).toBe('heating');
+  });
+
+  it('evaluateDryStartPreflight accepts auto when homogeneous', () => {
+    const raws = new Map([
+      ['a', rawWithMode('auto')],
+      ['b', rawWithMode('auto')],
+    ]);
+    const out = evaluateDryStartPreflight(['a', 'b'], raws);
+    expect(out.ok).toBe(true);
   });
 
   it('evaluateDryStartPreflight rejects mixed dry', () => {

@@ -41,6 +41,7 @@
 | Onecta OAuth client / refresh token | Engineer | `npm run lint` / config loads; integration test or `daikin:live-smoke` per README when credentials available — **not** “user said it works.” |
 | Cloud Run service deployed | Operator | `curl -sf` on **`/health`** (authenticated path per README) or GitHub Actions run **success** for deploy workflow. |
 | Secret Manager / Firestore wiring in GCP | Operator | Documented env names match Cloud Run service config; agent reads `README.md` / `DEPLOYMENT_READINESS.md` vs actual requirement. |
+| Kill switch / rate-limit tuning | Operator | Cloud Run → **Edit revision** → set `AUTOMATION_ENABLED=false` to skip Onecta tasks, or adjust `DAIKIN_HTTP_PACE_MS` / `DAIKIN_WRITE_CONCURRENCY` per `README.md` if logs show `429`. |
 
 For **Drive add-on / clasp / multi-SA fixture** examples (other family repos), see the **canonical** file under **`shared-docs`**.
 

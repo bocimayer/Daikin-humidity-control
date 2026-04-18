@@ -6,14 +6,19 @@
 import type { DaikinClient, OperationMode, RawDevice } from './daikin';
 import { readOperationModeFromRawDevice } from './daikin';
 
-/** Onecta "off" / fan-only style standby — compressor off, we still allow humidity-driven dry entry. */
-export const DRY_ENTRY_SOURCE_MODES: ReadonlySet<OperationMode> = new Set(['heating', 'fanOnly']);
+/**
+ * Modes where we **refuse** to command DRY: **`cooling` only** — the compressor cycle already
+ * dehumidifies; stacking an explicit DRY on top is wrong for the outdoor unit policy you set.
+ * All other reported Onecta modes (`heating`, `fanOnly`, `auto`, …) may enter DRY once the cluster
+ * is homogeneous and not already all-dry / mixed-dry.
+ */
+export const DRY_ENTRY_FORBIDDEN_MODES: ReadonlySet<OperationMode> = new Set(['cooling']);
 
 export type DryStartPreflightFailReason =
   | 'heterogeneous-operation-modes'
   | 'unknown-operation-mode'
   | 'mixed-dry-state'
-  | 'disallowed-source-mode'
+  | 'cooling-already-dehumidifies'
   | 'already-all-dry';
 
 export type DryStartPreflight =
@@ -47,7 +52,7 @@ function modesRecord(rows: { deviceId: string; mode: OperationMode | null }[]): 
  * - Every device must report a known operationMode (non-null).
  * - All reported modes must match.
  * - No "some dry, some not" (outdoor unit would be inconsistent).
- * - Shared mode must be heating or fanOnly (API has no literal "off"; fanOnly is treated as off).
+ * - Shared mode must **not** be **`cooling`** (compressor already dehumidifies — explicit DRY is blocked).
  * - If already all dry, caller should skip (nothing to start).
  */
 export function evaluateDryStartPreflight(
@@ -86,8 +91,8 @@ export function evaluateDryStartPreflight(
     return { ok: false, reason: 'already-all-dry', modesByDeviceId };
   }
 
-  if (!DRY_ENTRY_SOURCE_MODES.has(sharedMode)) {
-    return { ok: false, reason: 'disallowed-source-mode', modesByDeviceId };
+  if (DRY_ENTRY_FORBIDDEN_MODES.has(sharedMode)) {
+    return { ok: false, reason: 'cooling-already-dehumidifies', modesByDeviceId };
   }
 
   return { ok: true, sharedMode, raws };
@@ -128,7 +133,9 @@ export function evaluateDryStopPreflight(rows: DeviceClimateRow[]): DryStopPrefl
 /**
  * Humidity task may only reason about RH when the cluster is mode-consistent (same rules as dry-start
  * for mixed-dry / heterogeneous / unknown). Humidity is read from sensoryData in parseDeviceState and
- * does not depend on operationMode in code — whether fanOnly units report RH is device/API dependent.
+ * does not depend on operationMode in code, but **whether the hardware actually publishes indoor RH
+ * while not heating** (e.g. idle wall unit) is an **empirical** Onecta/device fact — if RH is null,
+ * that head cannot contribute to max-RH until the API returns a value.
  */
 export function evaluateHumidityAutomationCluster(rows: DeviceClimateRow[]): HumidityClusterGate {
   if (rows.length === 0) {

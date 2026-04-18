@@ -32,6 +32,9 @@ env:
   #   MODE_STRATEGY                     default: timer
   #   DRY_DURATION_MINUTES              default: 120
   #   LOG_LEVEL                         default: info
+  #   AUTOMATION_ENABLED                default: true (set false/0/off/disabled to skip dry-start, dry-stop, check-humidity)
+  #   DAIKIN_WRITE_CONCURRENCY          default: 1 (not wired in this YAML — set on Cloud Run if needed)
+  #   DAIKIN_HTTP_PACE_MS               default: 75 in app (not wired here — override on Cloud Run for 429 tuning)
   # Optional notify (GitHub Environment secrets):
   #   NOTIFY_EMAIL, GMAIL_SENDER, GMAIL_OAUTH_CLIENT_ID, GMAIL_OAUTH_CLIENT_SECRET, GMAIL_REFRESH_TOKEN — Gmail API (all five to enable mail)
   #   NOTIFY_WEBHOOK_URL — HTTPS JSON webhook

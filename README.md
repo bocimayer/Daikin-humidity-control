@@ -8,6 +8,8 @@ refresh token in Firestore.
 
 **OAuth stub (`daikin-oauth-stub`):** Daikin’s portal requires a **non-localhost** HTTPS redirect URI for the browser login. The small public Cloud Run app under `oauth-stub/` hosts `/oauth/callback` so `DAIKIN_REDIRECT_URI` can point there during onboarding. It is **not** the humidity-control service; see `docs/PRODUCTION_SETUP.md`.
 
+**Changelog:** [`CHANGELOG.md`](CHANGELOG.md)
+
 ---
 
 ## Architecture
@@ -20,15 +22,17 @@ Cloud Scheduler
   ▼
 Cloud Run  (private — no public access)
   └─ Express app
-       ├─ POST /tasks/dry-start       ← switch all units to DRY
-       ├─ POST /tasks/dry-stop        ← restore Firestore snapshot of settable Onecta state (fallback: HEAT + setpoint)
-       ├─ POST /tasks/check-humidity  ← read humidity, decide via hysteresis FSM
+       ├─ POST /tasks/dry-start       ← preflight cluster modes, then DRY (blocked from **cooling** only; shared outdoor unit)
+       ├─ POST /tasks/dry-stop        ← preflight all-in-dry, then restore Firestore snapshot (fallback: HEAT + setpoint)
+       ├─ POST /tasks/check-humidity  ← sequential reads, cluster gate, max-RH hysteresis (pure FSM; setActive after Onecta success)
+       ├─ GET  /tasks/device-status   ← read-only snapshot (still OIDC on /tasks)
        └─ GET  /health                ← liveness probe (not /healthz on Cloud Run — see routes.ts)
 
   Internal modules
-  ├─ DaikinClient   — Onecta OAuth2 + device ops (token refresh, retry, backoff)
-  ├─ HumidityFSM    — hysteresis state machine (high/low threshold logic)
-  ├─ IdempotencyGuard — in-memory dedup (10-min window per task)
+  ├─ DaikinClient   — Onecta OAuth2 + device ops (token refresh, retry, shared HTTP gate + optional pace between calls)
+  ├─ dry-cycle-guards — multi-head policy (homogeneous modes, dry entry blocked **only** in `cooling`, dry-stop only when all dry)
+  ├─ HumidityFSM    — hysteresis decisions (high/low); active flag updated only after successful dry-start/stop
+  ├─ IdempotencyGuard — in-memory dedup (10-min window per task; runs after successful preflight for dry-start/stop)
   └─ requireSchedulerAuth — OIDC JWT middleware (google-auth-library)
 
 Secrets/state:
@@ -56,9 +60,11 @@ Cloud Scheduler calls `/tasks/dry-start` at a fixed time and
 `/tasks/dry-stop` N minutes later. No humidity reading occurs.
 Set `MODE_STRATEGY=timer`.
 
+**Multi indoor / one outdoor:** before any Onecta writes, the service reads every gateway device and requires **one shared `operationMode`** across heads. **Dry-start** is allowed from **any** homogeneous mode **except `cooling`** — in cooling the compressor already dehumidifies, so we do not stack an explicit DRY. **`fanOnly`**, **`heating`**, **`auto`**, etc. are all valid baselines when every head matches. If heads disagree, the task returns **`200`** with `{ "skipped": true, "reason": "…", "modesByDeviceId": {…} }` and does **not** call idempotency for that attempt.
+
 ```
-[09:00] Scheduler → POST /tasks/dry-start  → all units → DRY (snapshot of all settable Onecta characteristics saved first)
-[11:00] Scheduler → POST /tasks/dry-stop   → replay snapshot from Firestore; if missing or still in DRY → HEAT @ HEAT_TARGET_TEMP_C
+[09:00] Scheduler → POST /tasks/dry-start  → preflight → all units → DRY (snapshot of settable Onecta characteristics saved first)
+[11:00] Scheduler → POST /tasks/dry-stop   → preflight (all must report dry) → replay snapshot; if missing or still in DRY → HEAT @ HEAT_TARGET_TEMP_C
 ```
 
 ### Option B — Humidity-aware
@@ -67,14 +73,15 @@ Cloud Scheduler polls `/tasks/check-humidity` every few hours.
 The hysteresis FSM decides whether to start or stop a dry cycle.
 Set `MODE_STRATEGY=humidity`.
 
-Humidity for the decision is the **maximum** of non-null % RH readings across gateway devices (units without a sensor are skipped). If every unit lacks humidity data, the handler returns `no-humidity-data`.
+**Cluster gate:** same **homogeneous mode** rules as timer dry-start apply before RH is used (no mixed dry, no unknown `operationMode`). **Humidity** for the decision is the **maximum** of non-null % RH readings **only from heads that actually returned a value** in the Onecta payload (`sensoryData` in `daikin.ts`). In real rooms, **whether a powered-down or idle wall unit still publishes indoor RH** depends on that model and what Onecta returns — if RH is `null`, that head does not contribute to max(RH). Use **`npm run daikin:humidity-snapshot`** (read-only live script; set `DOTENV_CONFIG_PATH` to your real `.env` if it is not in the repo) to see `operationMode` and `humidity` per device. If **no** head returns humidity, the handler returns `no-humidity-data`. A humidity **start** still requires **dry-start preflight** (homogeneous, not all `cooling`). A humidity **stop** requires **every** head to report **`dry`** before `dry-stop` runs.
 
 ```
 [every 3 h] Scheduler → POST /tasks/check-humidity
-               if max(RH) ≥ HUMIDITY_HIGH_THRESHOLD (and not in dry cycle) → dry-start
-               if max(RH) ≤ HUMIDITY_LOW_THRESHOLD (and in dry cycle)     → dry-stop
-               else                                                         → no-op
-[00:00] Scheduler → POST /tasks/dry-stop  (safety stop — runs regardless)
+               if cluster invalid                                                      → no-action + reason
+               if max(RH) ≥ HIGH (inactive FSM) and dry-start preflight OK              → dry-start
+               if max(RH) ≤ LOW (active FSM) and all heads still dry                  → dry-stop
+               else                                                                   → no-action
+[00:00] Scheduler → POST /tasks/dry-stop  (safety stop — still runs preflight; may skip if cluster not all-dry)
 ```
 
 ---
@@ -101,6 +108,9 @@ Humidity for the decision is the **maximum** of non-null % RH readings across ga
 | `HUMIDITY_LOW_THRESHOLD` | no | `60` | % RH — with humidity strategy, **max** reading at/below this stops dry (when in dry cycle) |
 | `MODE_STRATEGY` | no | `timer` | `timer` or `humidity` |
 | `LOG_LEVEL` | no | `info` | `trace` `debug` `info` `warn` `error` `fatal` |
+| `AUTOMATION_ENABLED` | no | `true` | Master switch: `false` / `0` / `off` / `disabled` skips `dry-start`, `dry-stop`, and `check-humidity` (still logs). Change via Cloud Run env / Secret Manager — not a public URL. |
+| `DAIKIN_WRITE_CONCURRENCY` | no | `1` | Max concurrent Onecta **gateway** HTTP calls (GET+PATCH) per process (`1`–`3`). Default `1` serializes all Onecta traffic. |
+| `DAIKIN_HTTP_PACE_MS` | no | `75` | Minimum ms between gated Onecta HTTP completions (sleep while holding the slot). Reduces `429` bursts on heavy `dry-stop` restores; set `0` to disable. |
 | `EXPECTED_AUDIENCE` | **yes** | — | Cloud Run service URL (OIDC audience check) |
 | `NOTIFY_EMAIL` | no | — | Optional — recipient for task notifications (requires all `GMAIL_*` below to send mail) |
 | `GMAIL_SENDER` | no | — | Optional — From address for Gmail API (must match an authorized send-as identity) |
@@ -109,7 +119,7 @@ Humidity for the decision is the **maximum** of non-null % RH readings across ga
 | `GMAIL_REFRESH_TOKEN` | no | — | Optional — OAuth refresh token for the sending identity (store in Secret Manager / GitHub env in production; never commit) |
 | `NOTIFY_WEBHOOK_URL` | no | — | Optional — HTTPS URL for JSON POST when tasks complete (Zapier/Make/custom) |
 
-**Gateway devices:** the service does **not** take device UUIDs from env. On each task it calls Onecta `GET /v1/gateway-devices` and uses **every** returned device for dry-start/stop and for humidity reads (null humidity on a unit is skipped). See `src/device-ids.ts` and `docs/PRODUCTION_SETUP.md`.
+**Gateway devices:** the service does **not** take device UUIDs from env. On each task it calls Onecta `GET /v1/gateway-devices` and uses **every** returned device for dry-start/stop and for humidity reads (null humidity on a unit is skipped for **max RH**, but the head is still included in **mode** preflight). See `src/device-ids.ts`, `src/dry-cycle-guards.ts`, and `docs/PRODUCTION_SETUP.md`.
 
 ### OAuth helper variables
 
@@ -160,7 +170,8 @@ curl -X POST http://localhost:8080/tasks/check-humidity
 npm test              # run all tests (offline unit tests only)
 npm run test:coverage # with coverage report
 npm run test:onnecta  # live Onecta: list/read, reversible setpoint PATCH, dry → snapshot restore on first device (needs valid .env)
-npm run daikin:live-smoke   # same flow as a CLI script (optional: device id, --raw)
+npm run daikin:live-smoke   # same flow as a CLI script (optional: device id, --raw, --read-only)
+npm run daikin:humidity-snapshot  # read-only: list devices + operationMode + humidity (no PATCH). Set `DOTENV_CONFIG_PATH` to an absolute path if your credentials live outside the repo. If Onecta returns **`invalid_grant`**, re-run browser OAuth and `npm run daikin:oauth-exchange` (local refresh token expired or revoked).
 npm run daikin:seed-firestore-from-local  # copy local refresh-token.json → Firestore (needs GOOGLE_CLOUD_PROJECT + ADC); see docs/PRODUCTION_SETUP.md
 ```
 
@@ -169,7 +180,8 @@ npm run daikin:seed-firestore-from-local  # copy local refresh-token.json → Fi
 Local development uses the configured local token file as the source of truth for the rotating refresh token. The repo `.env` file is bootstrap/static config only.
 
 Unit test suites (default `npm test`):
-- `tests/hysteresis.test.ts` — HumidityStateMachine transitions
+- `tests/hysteresis.test.ts` — HumidityStateMachine transitions (pure `evaluate`; `setActive` mirrors successful tasks)
+- `tests/dry-cycle-guards.test.ts` — cluster preflight (homogeneous modes, dry entry blocked in `cooling` only, dry-stop all-dry)
 - `tests/humidity-max-aggregation.test.ts` — max-RH vs average contract for FSM input
 - `tests/idempotency.test.ts` — IdempotencyGuard allow/block/reset
 - `tests/config.test.ts` — Zod schema validation and defaults
@@ -259,6 +271,8 @@ After running bootstrap.sh, add the printed secrets to the GitHub **Environment*
 | `MODE_STRATEGY` *(optional)* | `timer` |
 | `DRY_DURATION_MINUTES` *(optional)* | `120` |
 | `LOG_LEVEL` *(optional)* | `info` |
+| `AUTOMATION_ENABLED` *(optional)* | `true` — set `false` to no-op Onecta tasks without redeploying code |
+| `DAIKIN_HTTP_PACE_MS` / `DAIKIN_WRITE_CONCURRENCY` *(optional)* | tune if you hit Onecta `429` (see env table) |
 
 > The static Daikin app credentials (`DAIKIN_CLIENT_ID`, `DAIKIN_CLIENT_SECRET`)
 > live in Secret Manager. The latest rotating refresh token lives in Firestore
@@ -496,16 +510,16 @@ The Daikin Onecta private developer app allows **≈200 API calls/day**.
 
 Each call type costs:
 - Token refresh: 1 call (cached for ~1 h, only refreshed when needed)
-- `getDevices` list: 1 call per task that resolves devices (dry-start/stop/check-humidity each call Onecta once up front)
-- `getDeviceState` per gateway device: 1 call (humidity mode reads every listed device)
-- `setOperationMode` per device: 1 call
-- `setTemperature` per device: 1 call
+- `getDevices` list: 1 call per task that resolves device IDs (`resolveGatewayDeviceIds`)
+- `getGatewayDeviceRaw` per device: used **sequentially** for preflight and humidity checks (one HTTP at a time when `DAIKIN_WRITE_CONCURRENCY=1`, plus optional `DAIKIN_HTTP_PACE_MS` gap)
+- `dry-stop` restore: **one PATCH per settable characteristic** replayed from the snapshot (can be many calls), then a verify GET and optional heat fallback PATCHes
+- `setOperationMode` / `setTemperature` per device as needed
 
 **Conservative rules:**
 - In **humidity mode**: poll no more than every 2–3 hours (8 polls/day).
-  - With 4 devices: list (1) + 4×state reads per poll ≈ 5 calls per poll; 8 polls/day ≈ 40 calls/day before any dry actions (re-tune schedule if tight on quota)
-- In **timer mode**: 2 PATCH calls × number of devices per cycle.
-  - With 4 devices: 2×4×2 = 16 calls/day
+  - With N devices: list (1) + N sequential raw reads per poll, plus pace delay between each; dry actions add PATCH volume. Re-tune schedule if tight on quota or you see `429` in logs.
+- In **timer mode**: preflight adds N GETs before dry-start; dry-start/dry-stop PATCH counts depend on snapshot size.
+  - If `dry-stop` fails with `429`, heads can drift out of sync — deploy pacing and fix scheduler spacing; align all heads manually if needed.
 - Always set `DRY_DURATION_MINUTES` generously so one long cycle beats several short ones.
 - The access token is cached in memory; it costs only 1 refresh call per container cold start or token expiry (~1 h).
 

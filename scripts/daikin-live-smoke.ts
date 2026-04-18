@@ -4,29 +4,40 @@
  * Cross-references:
  *   - API client: ../src/daikin.ts
  *   - Gateway list (same source as Cloud Run tasks): ../src/device-ids.ts
- *   - Run: npm run daikin:live-smoke [-- <deviceId>]
+ *   - Run: npm run daikin:live-smoke [-- <deviceId>] [--read-only]
  *
  * Steps: list gateway devices → read each device state → optional reversible
  * heating setpoint nudge on one device (requires readable heating setpoint).
  */
 
-import 'dotenv/config';
+import path from 'path';
+import dotenv from 'dotenv';
+
+// Load before `../src/config` (which reads process.env at import time).
+// Use DOTENV_CONFIG_PATH for a shared team .env (e.g. docker_projects/.env); default: ./.env in cwd.
+dotenv.config({
+  path: process.env.DOTENV_CONFIG_PATH
+    ? path.resolve(process.env.DOTENV_CONFIG_PATH)
+    : path.resolve(process.cwd(), '.env'),
+});
+
 import { config } from '../src/config';
 import { DaikinClient } from '../src/daikin';
 import { createRefreshTokenStore } from '../src/token-store';
 
 const log = (...args: unknown[]) => console.log('[daikin-live-smoke]', ...args);
 
-function parseArgs(): { deviceId?: string; dumpRaw: boolean } {
+function parseArgs(): { deviceId?: string; dumpRaw: boolean; readOnly: boolean } {
   const argv = process.argv.slice(2);
   const dumpRaw = argv.includes('--raw');
-  const rest = argv.filter((a) => a !== '--raw');
+  const readOnly = argv.includes('--read-only');
+  const rest = argv.filter((a) => a !== '--raw' && a !== '--read-only');
   const deviceId = rest[0]?.trim() || undefined;
-  return { deviceId, dumpRaw };
+  return { deviceId, dumpRaw, readOnly };
 }
 
 async function main(): Promise<void> {
-  const { deviceId: overrideDeviceId, dumpRaw } = parseArgs();
+  const { deviceId: overrideDeviceId, dumpRaw, readOnly } = parseArgs();
   const refreshTokenStore = createRefreshTokenStore({
     backend: config.daikin.tokenStore.backend,
     bootstrapRefreshToken: config.daikin.bootstrapRefreshToken,
@@ -85,6 +96,12 @@ async function main(): Promise<void> {
         2,
       ),
     );
+  }
+
+  if (readOnly) {
+    log('--read-only: skipping setpoint PATCH test (use this when units are off or you only want RH/mode snapshot).');
+    console.log('\n--- Live read-only snapshot finished OK ---');
+    return;
   }
 
   const targetId = overrideDeviceId ?? rawList[0].id;
