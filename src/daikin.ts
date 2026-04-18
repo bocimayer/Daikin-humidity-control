@@ -377,10 +377,11 @@ export class DaikinClient {
   /**
    * Returns the interpreted state for a single device.
    *
-   * ADAPTER NOTE: humidity is read from the "sensoryData" management point,
-   * characteristic "sensoryData", sub-key "indoorHumidity.value".
-   * Confirm the exact nesting against live API output — it may differ per device
-   * model. An alternative path is climateControlInfo → sensoryData → humidity.
+   * ADAPTER NOTE: humidity — two common Onecta shapes (see Home Assistant
+   * jwillemsen/daikin_onecta sensor.py): (1) a standalone management point
+   * typed `sensoryData`; (2) a `sensoryData` characteristic on `climateControl` /
+   * `climateControlInfo` / `climateControlMainZone` whose `value` is an object
+   * with keys such as `indoorHumidity` or `roomHumidity`, each `{ value: <number> }`.
    *
    * ADAPTER NOTE: operationMode is read from the "climateControl" management
    * point, characteristic "operationMode".
@@ -431,7 +432,8 @@ export class DaikinClient {
   private parseDeviceState(device: RawDevice): DaikinDeviceState {
     const climateControl =
       this.findManagementPoint(device, 'climateControl') ??
-      this.findManagementPoint(device, 'climateControlInfo');
+      this.findManagementPoint(device, 'climateControlInfo') ??
+      this.findManagementPoint(device, 'climateControlMainZone');
     const sensoryData = this.findManagementPoint(device, 'sensoryData');
 
     const operationMode = this.extractCharacteristicValue<OperationMode>(
@@ -439,8 +441,19 @@ export class DaikinClient {
       'operationMode',
     );
 
-    // ADAPTER NOTE: adjust key path if the live API response differs.
-    const humidity = this.extractHumidity(sensoryData);
+    // ADAPTER NOTE: try standalone sensoryData MP, then embedded `sensoryData` on climate MPs
+    // (matches jwillemsen/daikin_onecta: management_point["sensoryData"]["value"][sensorKey]["value"]).
+    let humidity = this.extractHumidity(sensoryData);
+    if (humidity === null) {
+      humidity = this.extractHumidityFromClimateSensoryCharacteristic(climateControl);
+    }
+    if (humidity === null) {
+      // When primary climate MP already matched above, only probe main-zone if it is a distinct MP.
+      const mainZone = this.findManagementPoint(device, 'climateControlMainZone');
+      if (mainZone && mainZone !== climateControl) {
+        humidity = this.extractHumidityFromClimateSensoryCharacteristic(mainZone);
+      }
+    }
 
     // ADAPTER NOTE: adjust nested path if the live API response differs.
     const setpointTempC = this.extractSetpointTemp(climateControl);
@@ -610,24 +623,68 @@ export class DaikinClient {
   }
 
   /**
-   * ADAPTER NOTE: extracts indoor humidity from the sensoryData management point.
-   * Adjust the key path if your device model reports humidity differently.
+   * ADAPTER NOTE: extracts indoor humidity from a standalone `sensoryData` management point.
+   * Embedded climate `sensoryData` is handled by {@link extractHumidityFromClimateSensoryCharacteristic}.
    */
   private extractHumidity(sensoryData: ManagementPoint | null): number | null {
     if (!sensoryData) return null;
 
-    // Path 1: sensoryData → sensoryData characteristic → indoorHumidity.value
+    // Path 1: sensoryData MP → sensoryData characteristic → value map (indoorHumidity / roomHumidity / …)
     const sd = this.getCharacteristic(sensoryData, 'sensoryData');
-    if (sd?.value?.indoorHumidity?.value !== undefined) {
-      return sd.value.indoorHumidity.value as number;
+    if (sd?.value !== undefined) {
+      const fromMap = this.extractHumidityFromSensoryDataValueMap(sd.value);
+      if (fromMap !== null) {
+        return fromMap;
+      }
     }
 
-    // Path 2: direct "indoorHumidity" characteristic
+    // Path 2: direct "indoorHumidity" characteristic on the sensoryData MP
     const ih = this.getCharacteristic(sensoryData, 'indoorHumidity');
     if (ih?.value !== undefined) {
       return ih.value as number;
     }
 
+    return null;
+  }
+
+  /**
+   * Humidity nested under `climateControl` / `climateControlMainZone` as characteristic
+   * `sensoryData` with a `value` object — same traversal as Home Assistant daikin_onecta
+   * (`sensor.py` → DaikinValueSensor with sub_type `sensoryData`).
+   */
+  private extractHumidityFromClimateSensoryCharacteristic(
+    climateMp: ManagementPoint | null,
+  ): number | null {
+    if (!climateMp) return null;
+    const sd = this.getCharacteristic(climateMp, 'sensoryData');
+    if (sd?.value === undefined) return null;
+    return this.extractHumidityFromSensoryDataValueMap(sd.value);
+  }
+
+  /**
+   * `sensoryData` characteristic `value` is often a map of sensor id → `{ value, … }`.
+   * Keys seen in the wild: `indoorHumidity`, `roomHumidity` (Daikin Onecta / HA mapping).
+   */
+  private extractHumidityFromSensoryDataValueMap(value: unknown): number | null {
+    if (value === null || value === undefined || typeof value !== 'object') {
+      return null;
+    }
+    const v = value as Record<string, unknown>;
+    const keys = ['indoorHumidity', 'roomHumidity'] as const;
+    for (const key of keys) {
+      const node = v[key];
+      if (!node || typeof node !== 'object') continue;
+      const raw = (node as { value?: unknown }).value;
+      if (typeof raw === 'number' && !Number.isNaN(raw)) {
+        return raw;
+      }
+      if (typeof raw === 'string') {
+        const n = Number(raw);
+        if (!Number.isNaN(n)) {
+          return n;
+        }
+      }
+    }
     return null;
   }
 
