@@ -7,7 +7,7 @@
     "build": "tsc",
     "start": "node dist/server.js",
     "dev": "nodemon --exec ts-node src/server.ts",
-    "test": "jest",
+    "test": "jest --runInBand",
     "test:onnecta": "cross-env DAIKIN_INTEGRATION_TEST=1 jest --config jest.integration.config.cjs --runInBand",
     "test:coverage": "jest --coverage",
     "lint": "tsc --noEmit",
@@ -16,17 +16,21 @@
     "daikin:live-smoke": "ts-node scripts/daikin-live-smoke.ts",
     "daikin:humidity-snapshot": "ts-node scripts/daikin-live-smoke.ts --read-only",
     "daikin:seed-firestore-from-local": "node scripts/seed-firestore-refresh-from-local.js",
-    "daikin:access-token": "node setup/oauth-onboarding/get-access-token.js"
+    "daikin:access-token": "node setup/oauth-onboarding/get-access-token.js",
+    "daikin:auto-dry:disable": "bash setup/disable-auto-dry.sh",
+    "daikin:auto-dry:enable": "bash setup/enable-auto-dry.sh"
   },
   "engines": {
     "node": ">=20"
   },
   "dependencies": {
     "@google-cloud/firestore": "^8.3.0",
+    "@google-cloud/scheduler": "^4.2.0",
     "axios": "^1.6.8",
     "axios-retry": "^4.1.0",
     "dotenv": "^17.4.1",
     "express": "^4.18.3",
+    "firebase-admin": "^13.8.0",
     "google-auth-library": "^9.6.3",
     "googleapis": "^140.0.1",
     "pino": "^8.19.0",
@@ -58,7 +62,8 @@
       "\\.integration\\.test\\.ts$"
     ],
     "moduleNameMapper": {
-      "^googleapis$": "<rootDir>/tests/mocks/googleapis.stub.ts"
+      "^googleapis$": "<rootDir>/tests/mocks/googleapis.stub.ts",
+      "^@google-cloud/scheduler$": "<rootDir>/tests/mocks/cloud-scheduler.stub.ts"
     },
     "collectCoverageFrom": [
       "src/**/*.ts",

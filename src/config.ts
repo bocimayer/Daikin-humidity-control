@@ -44,6 +44,21 @@ function parseAutomationEnabled(val: unknown): boolean {
   return true;
 }
 
+function parseOpsFirebaseBypass(val: unknown): boolean {
+  if (val === undefined || val === null || val === '') return false;
+  return String(val).trim() === '1';
+}
+
+/** Comma-separated Google emails for /ops; empty = allow any Firebase-verified Google email. */
+function parseOpsEmailAllowlist(val: unknown): string[] {
+  if (val === undefined || val === null) return [];
+  if (typeof val !== 'string') return [];
+  return val
+    .split(',')
+    .map((e) => e.trim())
+    .filter((e) => e.length > 0);
+}
+
 const EnvSchema = z.object({
   PORT: z.string().default(DEFAULT_PORT),
   NODE_ENV: z.string().default(DEFAULT_NODE_ENV),
@@ -94,6 +109,16 @@ const EnvSchema = z.object({
   GMAIL_SENDER: optionalTrimmedString(),
   // Optional: JSON POST for automation (Zapier, Make, etc.).
   NOTIFY_WEBHOOK_URL: optionalUrlString(),
+
+  // Browser /ops/scheduler: Firebase Auth (Google) client SDK + Firebase Admin verifyIdToken + optional email allowlist.
+  FIREBASE_PROJECT_ID: optionalTrimmedString(),
+  FIREBASE_WEB_API_KEY: optionalTrimmedString(),
+  FIREBASE_AUTH_DOMAIN: optionalTrimmedString(),
+  ALLOWED_OPS_EMAILS: z.preprocess(parseOpsEmailAllowlist, z.array(z.string())),
+  OPS_FIREBASE_BYPASS: z.preprocess(parseOpsFirebaseBypass, z.boolean().default(false)),
+  GOOGLE_CLOUD_PROJECT: optionalTrimmedString(),
+  SCHEDULER_REGION: z.string().default('europe-central2'),
+  SCHEDULER_CHECK_HUMIDITY_JOB_NAME: z.string().default('daikin-check-humidity'),
 });
 
 export type AppConfig = {
@@ -131,6 +156,20 @@ export type AppConfig = {
   gmailRefreshToken?: string;
   gmailSender?: string;
   notifyWebhookUrl?: string;
+  /** Firebase Auth + Scheduler pause for /ops/scheduler. */
+  ops: {
+    /** Firebase Admin + client `projectId`; prefers FIREBASE_PROJECT_ID then GOOGLE_CLOUD_PROJECT. */
+    firebaseProjectId: string;
+    /** Web API key (public) for client SDK sign-in — required in production for the ops page UI. */
+    firebaseWebApiKey?: string;
+    /** Defaults to `<firebaseProjectId>.firebaseapp.com` when project id is set. */
+    firebaseAuthDomain: string;
+    allowedOpsEmails: string[];
+    firebaseBypass: boolean;
+    gcpProjectId: string;
+    schedulerRegion: string;
+    schedulerCheckHumidityJobName: string;
+  };
 };
 
 function loadConfig(): AppConfig {
@@ -146,6 +185,12 @@ function loadConfig(): AppConfig {
   const env = result.data;
   const tokenStoreBackend = env.DAIKIN_TOKEN_STORE ?? resolveDefaultTokenStoreBackend(env.NODE_ENV);
   const localTokenFilePath = env.DAIKIN_TOKEN_FILE_PATH ?? resolveDefaultTokenFilePath();
+
+  const firebaseProjectId =
+    (env.FIREBASE_PROJECT_ID ?? '').trim() || (env.GOOGLE_CLOUD_PROJECT ?? '').trim();
+  const firebaseAuthDomain =
+    (env.FIREBASE_AUTH_DOMAIN ?? '').trim() ||
+    (firebaseProjectId ? `${firebaseProjectId}.firebaseapp.com` : '');
 
   if (env.HUMIDITY_LOW_THRESHOLD >= env.HUMIDITY_HIGH_THRESHOLD) {
     throw new Error(
@@ -185,6 +230,16 @@ function loadConfig(): AppConfig {
     gmailRefreshToken: env.GMAIL_REFRESH_TOKEN,
     gmailSender: env.GMAIL_SENDER,
     notifyWebhookUrl: env.NOTIFY_WEBHOOK_URL,
+    ops: {
+      firebaseProjectId,
+      firebaseWebApiKey: env.FIREBASE_WEB_API_KEY?.trim(),
+      firebaseAuthDomain,
+      allowedOpsEmails: env.ALLOWED_OPS_EMAILS,
+      firebaseBypass: env.OPS_FIREBASE_BYPASS,
+      gcpProjectId: env.GOOGLE_CLOUD_PROJECT?.trim() ?? '',
+      schedulerRegion: env.SCHEDULER_REGION,
+      schedulerCheckHumidityJobName: env.SCHEDULER_CHECK_HUMIDITY_JOB_NAME,
+    },
   };
 }
 

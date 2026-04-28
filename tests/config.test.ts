@@ -33,6 +33,14 @@ function setEnv(overrides: Record<string, string | undefined>): void {
     'DAIKIN_WRITE_CONCURRENCY',
     'DAIKIN_HTTP_PACE_MS',
     'AUTOMATION_ENABLED',
+    'FIREBASE_PROJECT_ID',
+    'FIREBASE_WEB_API_KEY',
+    'FIREBASE_AUTH_DOMAIN',
+    'ALLOWED_OPS_EMAILS',
+    'OPS_FIREBASE_BYPASS',
+    'GOOGLE_CLOUD_PROJECT',
+    'SCHEDULER_REGION',
+    'SCHEDULER_CHECK_HUMIDITY_JOB_NAME',
   ]) {
     delete process.env[key];
   }
@@ -138,6 +146,20 @@ describe('config — valid environment', () => {
     setEnv({ DAIKIN_HTTP_PACE_MS: '0' });
     const { config } = await loadConfig();
     expect(config.daikin.httpPaceMs).toBe(0);
+  });
+
+  it('defaults ops (Firebase) allowlist to empty and scheduler job name/region', async () => {
+    const { config } = await loadConfig();
+    expect(config.ops.allowedOpsEmails).toEqual([]);
+    expect(config.ops.firebaseBypass).toBe(false);
+    expect(config.ops.schedulerRegion).toBe('europe-central2');
+    expect(config.ops.schedulerCheckHumidityJobName).toBe('daikin-check-humidity');
+  });
+
+  it('parses ALLOWED_OPS_EMAILS as comma list', async () => {
+    setEnv({ ALLOWED_OPS_EMAILS: 'A@X.com, b@Y.org ' });
+    const { config } = await loadConfig();
+    expect(config.ops.allowedOpsEmails).toEqual(['A@X.com', 'b@Y.org']);
   });
 
   it('defaults AUTOMATION_ENABLED to true', async () => {

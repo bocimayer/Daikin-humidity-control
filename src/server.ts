@@ -17,6 +17,7 @@ import { DaikinClient } from './daikin';
 import { HumidityStateMachine } from './humidity';
 import { IdempotencyGuard } from './idempotency';
 import { requireSchedulerAuth } from './scheduler-auth';
+import { createOpsRouter } from './ops-routes';
 import { createRouter } from './routes';
 import { DeviceRestoreStore } from './device-restore-store';
 import { createRefreshTokenStore } from './token-store';
@@ -53,10 +54,14 @@ const deviceRestoreStore = new DeviceRestoreStore(config.daikinRestoreCollection
 const app = express();
 
 app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
 // Protect all task endpoints with OIDC verification.
 // Task routes use OIDC; GET /health is unauthenticated (see routes.ts — avoid /healthz on Cloud Run).
 app.use('/tasks', requireSchedulerAuth);
+
+// Browser /ops/scheduler: Firebase Auth client + Bearer ID token on JSON APIs (see firebase-ops-auth.ts).
+app.use('/ops', createOpsRouter());
 
 // Mount all routes.
 app.use('/', createRouter(daikinClient, humidityFsm, idempotency, deviceRestoreStore));
