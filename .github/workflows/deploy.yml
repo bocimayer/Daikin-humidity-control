@@ -38,6 +38,13 @@ env:
   #   NOTIFY_EMAIL, GMAIL_SENDER, GMAIL_OAUTH_CLIENT_ID, GMAIL_OAUTH_CLIENT_SECRET, GMAIL_REFRESH_TOKEN — Gmail API (all five to enable mail)
   #   NOTIFY_WEBHOOK_URL — HTTPS JSON webhook
   #   DAIKIN_RESTORE_COLLECTION — Firestore collection for pre-dry snapshots (default device_restore_state)
+  # Browser /ops/scheduler (Firebase Auth + Scheduler API; optional in Environment gcp):
+  #   FIREBASE_WEB_API_KEY — Firebase Console → Project settings → Your apps (Web API key; public)
+  #   FIREBASE_AUTH_DOMAIN — optional (defaults to <PROJECT>.firebaseapp.com when unset in deploy env)
+  #   FIREBASE_PROJECT_ID — optional if same as GCP project id (else override Firebase/GCP mismatch)
+  #   ALLOWED_OPS_EMAILS — optional comma list for app-level allowlist
+  #   SCHEDULER_REGION — optional override (default: europe-central2 or match GCP_REGION)
+  #   SCHEDULER_CHECK_HUMIDITY_JOB_NAME — optional (default: daikin-check-humidity)
 
   SERVICE_NAME: daikin-humidity-control
 jobs:
@@ -122,6 +129,13 @@ jobs:
           GMAIL_OAUTH_CLIENT_SECRET: ${{ secrets.GMAIL_OAUTH_CLIENT_SECRET || '' }}
           GMAIL_REFRESH_TOKEN: ${{ secrets.GMAIL_REFRESH_TOKEN || '' }}
           NOTIFY_WEBHOOK_URL: ${{ secrets.NOTIFY_WEBHOOK_URL || '' }}
+          FIREBASE_WEB_API_KEY: ${{ secrets.FIREBASE_WEB_API_KEY || '' }}
+          FIREBASE_AUTH_DOMAIN: ${{ secrets.FIREBASE_AUTH_DOMAIN || '' }}
+          FIREBASE_PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID || '' }}
+          ALLOWED_OPS_EMAILS: ${{ secrets.ALLOWED_OPS_EMAILS || '' }}
+          GOOGLE_CLOUD_PROJECT: ${{ secrets.GCP_PROJECT_ID }}
+          SCHEDULER_REGION: ${{ secrets.SCHEDULER_REGION || secrets.GCP_REGION || 'europe-central2' }}
+          SCHEDULER_CHECK_HUMIDITY_JOB_NAME: ${{ secrets.SCHEDULER_CHECK_HUMIDITY_JOB_NAME || 'daikin-check-humidity' }}
         run: |
           # OIDC audience must equal status.url from the API. That URL is not derivable from
           # project id/region alone (Cloud Run may use *.a.run.app hostnames). The app requires
@@ -161,6 +175,16 @@ jobs:
               ("GMAIL_OAUTH_CLIENT_SECRET", os.environ.get("GMAIL_OAUTH_CLIENT_SECRET", "")),
               ("GMAIL_REFRESH_TOKEN", os.environ.get("GMAIL_REFRESH_TOKEN", "")),
               ("NOTIFY_WEBHOOK_URL", os.environ.get("NOTIFY_WEBHOOK_URL", "")),
+              ("FIREBASE_WEB_API_KEY", os.environ.get("FIREBASE_WEB_API_KEY", "")),
+              ("FIREBASE_AUTH_DOMAIN", os.environ.get("FIREBASE_AUTH_DOMAIN", "")),
+              ("FIREBASE_PROJECT_ID", os.environ.get("FIREBASE_PROJECT_ID", "")),
+              ("ALLOWED_OPS_EMAILS", os.environ.get("ALLOWED_OPS_EMAILS", "")),
+              ("GOOGLE_CLOUD_PROJECT", os.environ.get("GOOGLE_CLOUD_PROJECT", "")),
+              ("SCHEDULER_REGION", os.environ.get("SCHEDULER_REGION", "europe-central2")),
+              (
+                  "SCHEDULER_CHECK_HUMIDITY_JOB_NAME",
+                  os.environ.get("SCHEDULER_CHECK_HUMIDITY_JOB_NAME", "daikin-check-humidity"),
+              ),
           ]
           with open("cloud-run-env.yaml", "w", encoding="utf-8") as f:
               for key, val in pairs:
@@ -171,7 +195,7 @@ jobs:
             --image="${{ env.IMAGE_TAG }}" \
             --region="${{ secrets.GCP_REGION }}" \
             --platform=managed \
-            --no-allow-unauthenticated \
+            --allow-unauthenticated \
             --service-account="daikin-runtime-sa@${{ secrets.GCP_PROJECT_ID }}.iam.gserviceaccount.com" \
             --env-vars-file=cloud-run-env.yaml \
             --set-secrets="DAIKIN_CLIENT_ID=DAIKIN_CLIENT_ID:latest,DAIKIN_CLIENT_SECRET=DAIKIN_CLIENT_SECRET:latest" \
@@ -195,45 +219,15 @@ jobs:
               --project="${{ secrets.GCP_PROJECT_ID }}"
           fi
 
-      # ── Smoke test (private URL: OIDC token, audience = SERVICE_URL) ────────
-      # Requires deploy SA: roles/iam.serviceAccountTokenCreator (on itself) + roles/run.invoker (on this service).
+      # ── Smoke test (public ingress: unauthenticated GET /health; /tasks still requires OIDC in-app)
       # Use /health not /healthz — Cloud Run's edge returns HTML 404 for /healthz before the container.
       - name: Smoke test /health
-        env:
-          GCP_DEPLOY_SA: ${{ secrets.GCP_DEPLOY_SA }}
         run: |
-          # Avoid https://host//health (double slash) if SERVICE_URL had a trailing slash.
           BASE_URL="${SERVICE_URL%/}"
-          export BASE_URL
-          TOKEN=$(python3 <<'PY'
-          import json
-          import os
-          import urllib.error
-          import urllib.parse
-          import urllib.request
-
-          access = os.popen("gcloud auth print-access-token").read().strip()
-          sa = os.environ["GCP_DEPLOY_SA"]
-          aud = os.environ["BASE_URL"].rstrip("/")
-          enc = urllib.parse.quote(sa, safe="")
-          url = f"https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/{enc}:generateIdToken"
-          body = json.dumps({"audience": aud, "includeEmail": True}).encode("utf-8")
-          req = urllib.request.Request(url, data=body, method="POST")
-          req.add_header("Authorization", f"Bearer {access}")
-          req.add_header("Content-Type", "application/json; charset=utf-8")
-          try:
-              with urllib.request.urlopen(req) as resp:
-                  print(json.load(resp)["token"])
-          except urllib.error.HTTPError as e:
-              raise SystemExit(f"generateIdToken failed HTTP {e.code}: {e.read().decode()!r}") from e
-          PY
-          )
-          HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
-            -H "Authorization: Bearer ${TOKEN}" \
-            "${BASE_URL}/health")
+          HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "${BASE_URL}/health")
           if [ "$HTTP_STATUS" != "200" ]; then
             echo "Health check failed with HTTP $HTTP_STATUS (BASE_URL=${BASE_URL})"
-            curl -sS -H "Authorization: Bearer ${TOKEN}" "${BASE_URL}/health" || true
+            curl -sS "${BASE_URL}/health" || true
             exit 1
           fi
           echo "Health check passed (HTTP $HTTP_STATUS)"
