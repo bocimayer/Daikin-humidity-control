@@ -6,6 +6,12 @@ All notable changes to this project are documented in this file. The format is b
 
 ### Added
 
+- Dependency **`firebase-admin`** for Firebase ID token verification (`package.json`).
+
+- **`GET /ops/scheduler`** HTML shell + **`GET /ops/scheduler/state`** / **`POST /ops/scheduler`** JSON APIs: **Firebase Auth** (Google) + **`firebase-admin`** ID token verification, optional **`ALLOWED_OPS_EMAILS`**, Cloud Scheduler via **`@google-cloud/scheduler`** (`src/firebase-ops-auth.ts`, `src/ops-routes.ts`, `src/ops-scheduler-html.ts`, `src/scheduler-ops.ts`, `setup/grant-runtime-scheduler-ops-iam.sh`, `README.md`).
+
+- **`setup/disable-auto-dry.sh`** and **`setup/enable-auto-dry.sh`**: pause / resume Cloud Scheduler job **`daikin-check-humidity`** (humidity FSM) without Cloud Run deploy; npm **`daikin:auto-dry:disable`** / **`daikin:auto-dry:enable`** (`README.md`, `docs/PRODUCTION_SETUP.md`, `DEPLOYMENT_READINESS.md`).
+
 - **`POST /tasks/notify-test`**: OIDC-only probe that sends one Gmail message when notify env is configured (`README.md`).
 
 - **`AUTOMATION_ENABLED`** env: master switch to skip `dry-start`, `dry-stop`, and `check-humidity` without removing OIDC (`README.md`).
@@ -15,6 +21,7 @@ All notable changes to this project are documented in this file. The format is b
 
 ### Changed
 
+- **Browser /ops:** Replaced IAP JWT verification with **Firebase Authentication** (Google); Cloud Run deploy uses **`--allow-unauthenticated`** at the edge — **`/tasks/*`** remains OIDC-only in the app (`README.md`, `.github/workflows/deploy.yml`; removed `src/iap-ops-auth.ts`).
 - **Dry-start policy:** refuse **only** homogeneous **`cooling`** (`cooling-already-dehumidifies`); allow **`heating` / `fanOnly` / `auto` / …** when every head matches (`src/dry-cycle-guards.ts`, docs).
 - **`npm run daikin:humidity-snapshot`** — `daikin-live-smoke.ts --read-only`: Onecta snapshot of mode + humidity **without** setpoint PATCH; **`dotenv.config`** honors **`DOTENV_CONFIG_PATH`** before importing app config (`package.json`, `README.md`, `scripts/daikin-live-smoke.ts`).
 - **`HumidityStateMachine.evaluate`** is **pure**; `setActive(true|false)` runs only after **full** dry-start / dry-stop success so the FSM cannot desync from the plant (`README.md`, `tests/hysteresis.test.ts`).

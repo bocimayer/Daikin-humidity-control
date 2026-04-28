@@ -148,8 +148,37 @@ Confirm **`daikin-scheduler-sa`** has **`roles/run.invoker`** on `daikin-humidit
 
 ---
 
+## Operations — enable / disable auto dry (Scheduler, no deploy)
+
+*Updated 2026-04-24.*
+
+**Auto dry** = Cloud Scheduler job **`daikin-check-humidity`** → `POST /tasks/check-humidity`. To **pause** that schedule (stop humidity-driven DRY) **without** changing Cloud Run env: from **`Daikin-humidity-control/`**, run **`bash setup/disable-auto-dry.sh`** or **`npm run daikin:auto-dry:disable`**. To **resume:** **`setup/enable-auto-dry.sh`** or **`npm run daikin:auto-dry:enable`**. Defaults match **`create-scheduler-jobs.sh`**; override **`PROJECT_ID`** / **`REGION`** if needed. Your **`gcloud`** principal needs permission to **pause / resume** the job. **Nightly** **`daikin-dry-stop-safety`** is **not** paused by these scripts. For app-wide off (`dry-start`, `dry-stop`, and `check-humidity` together), set **`AUTOMATION_ENABLED=false`** on the service — see `README.md`.
+
+---
+
+## Browser ops (IAP) — pause / resume auto dry from a phone
+
+*Updated 2026-04-24.*
+
+The service exposes **`GET` / `POST /ops/scheduler`** for a minimal HTML UI that **pauses** or **resumes** only the Cloud Scheduler job **`daikin-check-humidity`** (same effect as `setup/disable-auto-dry.sh` / `enable-auto-dry.sh`). This is **not** a public URL on the raw `*.run.app` host: production should use **Identity-Aware Proxy (IAP)** with **Google** sign-in and an allowlist in front of Cloud Run (typically **External HTTPS load balancer + serverless NEG**). See **[setup/enable-iap-ops-ingress.md](../setup/enable-iap-ops-ingress.md)** for the GCP steps and operator URL.
+
+**App env (Cloud Run):**
+
+- **`IAP_EXPECTED_AUDIENCE`** — JWT `aud` from the IAP / backend configuration (required in production for JWT verification; copy from the Google Cloud IAP console for your backend).
+- **`ALLOWED_OPS_EMAILS`** (optional) — comma-separated Google `email` claims; if set, the app rejects signed-in users not in the list (defense in depth next to IAP).
+- **`GOOGLE_CLOUD_PROJECT`** — usually set automatically on Cloud Run; otherwise set the GCP project id.
+- **`SCHEDULER_REGION`** — default `europe-central2` (match `create-scheduler-jobs.sh`).
+- **`SCHEDULER_CHECK_HUMIDITY_JOB_NAME`** — default `daikin-check-humidity`.
+
+**IAM:** grant the **Cloud Run runtime** service account (`daikin-runtime-sa@…`) permission to **get / pause / resume** that job. See **[setup/grant-runtime-scheduler-ops-iam.sh](../setup/grant-runtime-scheduler-ops-iam.sh)** (or a custom role with `cloudscheduler.jobs.get`, `cloudscheduler.jobs.pause`, `cloudscheduler.jobs.enable`).
+
+**Local dev:** `NODE_ENV=development` and **`OPS_IAP_BYPASS=1`** allow hitting `/ops/scheduler` **without** an IAP JWT (never enable bypass in production).
+
+---
+
 ## Phase H — Ongoing operations
 
+- **Scheduler-only auto dry off/on:** `setup/disable-auto-dry.sh` / `setup/enable-auto-dry.sh` (see *Operations — enable / disable auto dry* above) — use when you must stop **`check-humidity`** without touching **`AUTOMATION_ENABLED`**.  
 - Monitor Cloud Run logs and Daikin daily quota (`README.md` — humidity mode does **sequential** `GET` per gateway device for preflight plus optional pacing; `dry-stop` can issue **many** PATCHes per head).  
 - Watch for **`429`** on Onecta: if `dry-stop` fails completely after a successful `dry-start`, indoor heads can disagree — align them manually, then increase `DAIKIN_HTTP_PACE_MS` or space scheduler jobs (`README.md` env table).  
 - **`skipped`** JSON on `dry-start` / `dry-stop` / `check-humidity` often means **cluster policy** (`heterogeneous-operation-modes`, `mixed-dry-state`, `cooling-already-dehumidifies`, `cluster-not-in-dry`) or **`AUTOMATION_ENABLED`** off — see `src/dry-cycle-guards.ts` and `README.md`. Read-only Onecta snapshot: **`npm run daikin:humidity-snapshot`** (with `DOTENV_CONFIG_PATH` if needed).  

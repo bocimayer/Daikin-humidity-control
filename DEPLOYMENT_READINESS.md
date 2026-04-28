@@ -118,6 +118,10 @@ Recommended fields:
 
 You need jobs that call the main Cloud Run service over HTTPS with OIDC.
 
+**Pause / resume scheduled humidity (auto dry) without a redeploy:** from **`Daikin-humidity-control/`**, `bash setup/disable-auto-dry.sh` pauses job **`daikin-check-humidity`** only; `bash setup/enable-auto-dry.sh` resumes it. Npm: **`daikin:auto-dry:disable`** / **`daikin:auto-dry:enable`**. Nightly **`daikin-dry-stop-safety`** is unchanged. For an app-wide kill switch, use **`AUTOMATION_ENABLED=false`** (see `README.md`).
+
+**Browser UI (`/ops/scheduler`):** **Firebase Authentication** (Google) + **`FIREBASE_WEB_API_KEY`** on Cloud Run (see **`.github/workflows/deploy.yml`**). Operators use the Cloud Run **`https://…run.app/ops/scheduler`** URL (ingress is **allow-unauthenticated**; **`/tasks/*`** remains OIDC-only in the app). The **runtime** service account must verify Firebase tokens (**Firebase Authentication Admin** / Admin SDK) and call Cloud Scheduler on **`daikin-check-humidity`** (see **`setup/grant-runtime-scheduler-ops-iam.sh`**). Optional **`ALLOWED_OPS_EMAILS`**.
+
 ---
 
 ## Required IAM
@@ -351,6 +355,7 @@ After deployment, verify all of these:
 - jobs run on schedule
 - manual job execution works
 - logs show successful execution
+- optional: you can **pause** `daikin-check-humidity` via **`setup/disable-auto-dry.sh`** when you want to stop auto dry without changing Cloud Run config (`README.md`)
 
 ### Operations
 

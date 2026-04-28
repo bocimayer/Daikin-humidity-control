@@ -20,7 +20,7 @@ refresh token in Firestore.
 Cloud Scheduler
   │  (OIDC-authenticated HTTP POST)
   ▼
-Cloud Run  (private — no public access)
+Cloud Run  (HTTPS — **allow-unauthenticated** invocations at the edge so browsers reach `/ops`; **`/tasks/*`** still requires **OIDC** in-app; **`/ops/*` APIs** require **Firebase ID tokens**)
   └─ Express app
        ├─ POST /tasks/dry-start       ← preflight cluster modes, then DRY (blocked from **cooling** only; shared outdoor unit)
        ├─ POST /tasks/dry-stop        ← preflight all-in-dry, then restore Firestore snapshot (fallback: HEAT + setpoint)
@@ -74,6 +74,15 @@ Cloud Scheduler calls **`POST /tasks/check-humidity`** on a fixed cadence (for e
 
 **Scheduler setup:** from repo root, with `gcloud` authenticated and `PROJECT_ID` / `REGION` set, run **`bash setup/create-scheduler-jobs.sh`**. It removes legacy **`daikin-dry-start`** / **`daikin-dry-stop`** timer jobs if they exist and **upserts** **`daikin-check-humidity`** plus **`daikin-dry-stop-safety`**.
 
+**Enable / disable “auto dry” (no Cloud Run deploy):** “Auto dry” here means the **Cloud Scheduler** job **`daikin-check-humidity`**, which `POST`s **`/tasks/check-humidity`**.
+
+- **Turn off** automatic humidity→DRY: from **`Daikin-humidity-control/`**, run **`bash setup/disable-auto-dry.sh`** or **`npm run daikin:auto-dry:disable`**. This **pauses** only **`daikin-check-humidity`**. The nightly **`daikin-dry-stop-safety`** job (`POST /tasks/dry-stop`) is **not** paused.
+- **Turn on again:** **`bash setup/enable-auto-dry.sh`** or **`npm run daikin:auto-dry:enable`**.
+
+Defaults for **`PROJECT_ID`** and **`REGION`** match **`setup/create-scheduler-jobs.sh`** (override with environment variables if needed). The active **`gcloud`** account needs permission to **pause / resume** that Scheduler job on the project. For a **service-wide** switch that skips `dry-start`, `dry-stop`, and `check-humidity` together, set **`AUTOMATION_ENABLED=false`** on Cloud Run (see env table above).
+
+**Browser (Firebase Auth + Google):** add Firebase to the **same GCP project** (Firebase Console → Authentication → **Google** sign-in). Under Authentication → **Settings** → **Authorized domains**, add your Cloud Run hostname (e.g. **`your-service-xxxxx-lm.a.run.app`**). Set **`FIREBASE_WEB_API_KEY`** (Project settings → Web app) plus **`GOOGLE_CLOUD_PROJECT`** / **`FIREBASE_PROJECT_ID`** on Cloud Run. Open **`https://<CLOUD_RUN_URL>/ops/scheduler`**, sign in with Google, then use **Disable / Enable**. APIs **`GET /ops/scheduler/state`** and **`POST /ops/scheduler`** require **`Authorization: Bearer <Firebase ID token>`** (handled by the page script). The runtime service account needs **`roles/firebaseauth.admin`** (or equivalent) to verify tokens via Admin SDK, plus Scheduler **get/pause/resume** on **`daikin-check-humidity`** — **`setup/grant-runtime-scheduler-ops-iam.sh`**. **Local only:** `NODE_ENV=development` and **`OPS_FIREBASE_BYPASS=1`** skip Firebase verification (**never** in production).
+
 **Mail test:** `POST /tasks/notify-test` with the same OIDC token as other `/tasks/*` routes (see `docs/PRODUCTION_SETUP.md`). Successful dry-start, dry-stop, and every check-humidity outcome also trigger mail when Gmail notify env vars are set.
 
 ---
@@ -109,6 +118,14 @@ Cloud Scheduler calls **`POST /tasks/check-humidity`** on a fixed cadence (for e
 | `GMAIL_OAUTH_CLIENT_SECRET` | no | — | Optional — Gmail OAuth 2.0 client secret |
 | `GMAIL_REFRESH_TOKEN` | no | — | Optional — OAuth refresh token for the sending identity (store in Secret Manager / GitHub env in production; never commit) |
 | `NOTIFY_WEBHOOK_URL` | no | — | Optional — HTTPS URL for JSON POST when tasks complete (Zapier/Make/custom) |
+| `FIREBASE_WEB_API_KEY` | **yes** for ops UI | — | Firebase Console → Project settings → Your apps — **Web API key** (public; embedded in `/ops/scheduler` HTML for client sign-in). Without it, the ops page returns **503**. |
+| `FIREBASE_AUTH_DOMAIN` | no | `<project>.firebaseapp.com` | Firebase Auth authorized-domain host (usually default when **`GOOGLE_CLOUD_PROJECT`** / **`FIREBASE_PROJECT_ID`** is set). |
+| `FIREBASE_PROJECT_ID` | no | falls back to **`GOOGLE_CLOUD_PROJECT`** | Firebase / GCP project id for Admin SDK + client `projectId`. |
+| `ALLOWED_OPS_EMAILS` | **yes** in production | — | Comma-separated Google **`email`** allowlist for `/ops` JSON routes. **Must be non-empty on Cloud Run** (`NODE_ENV=production`), or `/ops` APIs return **503**. In development, empty means any signed-in user (do not rely on this for prod). |
+| `OPS_FIREBASE_BYPASS` | no | `0` | If `1` **and** `NODE_ENV=development`, skip Firebase token verification (**never** set in production). |
+| `GOOGLE_CLOUD_PROJECT` | no | — | GCP project id (often set on Cloud Run; used for Cloud Scheduler API from `/ops`). |
+| `SCHEDULER_REGION` | no | `europe-central2` | Region of the **`daikin-check-humidity`** job. |
+| `SCHEDULER_CHECK_HUMIDITY_JOB_NAME` | no | `daikin-check-humidity` | Job name to pause/resume from `/ops/scheduler`. |
 
 **Gateway devices:** the service does **not** take device UUIDs from env. On each task it calls Onecta `GET /v1/gateway-devices` and uses **every** returned device for dry-start/stop and for humidity reads (null humidity on a unit is skipped for **max RH**, but the head is still included in **mode** preflight). See `src/device-ids.ts`, `src/dry-cycle-guards.ts`, and `docs/PRODUCTION_SETUP.md`.
 
