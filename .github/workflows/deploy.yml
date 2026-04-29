@@ -38,13 +38,16 @@ env:
   #   NOTIFY_EMAIL, GMAIL_SENDER, GMAIL_OAUTH_CLIENT_ID, GMAIL_OAUTH_CLIENT_SECRET, GMAIL_REFRESH_TOKEN — Gmail API (all five to enable mail)
   #   NOTIFY_WEBHOOK_URL — HTTPS JSON webhook
   #   DAIKIN_RESTORE_COLLECTION — Firestore collection for pre-dry snapshots (default device_restore_state)
-  # Browser /ops/scheduler (Firebase Auth + Scheduler API; optional in Environment gcp):
-  #   FIREBASE_WEB_API_KEY — Firebase Console → Project settings → Your apps (Web API key; public)
-  #   FIREBASE_AUTH_DOMAIN — optional (defaults to <PROJECT>.firebaseapp.com when unset in deploy env)
-  #   FIREBASE_PROJECT_ID — optional if same as GCP project id (else override Firebase/GCP mismatch)
-  #   ALLOWED_OPS_EMAILS — optional comma list for app-level allowlist
-  #   SCHEDULER_REGION — optional override (default: europe-central2 or match GCP_REGION)
-  #   SCHEDULER_CHECK_HUMIDITY_JOB_NAME — optional (default: daikin-check-humidity)
+  # Browser /ops/scheduler (Firebase Auth + Scheduler API). WIRED IN deploy.yml via --env-vars-file.
+  #
+  # ⚠️  SOURCE OF TRUTH: GitHub Actions Environment "gcp" secrets. The workflow deploys with
+  #     secrets.FOO || '' — missing secret → empty string on Cloud Run. The next gcloud run deploy
+  #     REPLACES env for those keys; values set only in Cloud Run Console (not in gcp) are LOST.
+  #   - FIREBASE_WEB_API_KEY — REQUIRED for /ops UI (503 if empty). Firebase → Project settings → Web app.
+  #   - FIREBASE_PROJECT_ID — set when Firebase project id ≠ GCP project id (e.g. tihany-daikin vs tihany-daikin-humidity).
+  #   - FIREBASE_AUTH_DOMAIN — optional; empty uses default from project id in app.
+  #   - ALLOWED_OPS_EMAILS — production /ops JSON requires non-empty allowlist (see README).
+  #   SCHEDULER_* — optional overrides (default europe-central2 / daikin-check-humidity).
 
   SERVICE_NAME: daikin-humidity-control
 jobs:
