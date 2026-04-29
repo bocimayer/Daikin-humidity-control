@@ -4,6 +4,10 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### Documentation
+
+- **GitHub → Cloud Run env contract:** `README.md`, `DEPLOYMENT_READINESS.md`, `.github/workflows/deploy.yml` header comments, and workspace **`.cursor/rules/cloud-run-deploy-env.mdc`** — GitHub Actions **`deploy.yml`** applies **`--env-vars-file`** from Environment **`gcp`** secrets; missing **`FIREBASE_WEB_API_KEY`** / related keys deploy as empty and **overwrite** values set only in the GCP Console, which breaks **`GET /ops/scheduler`** (503) after the next `main` deploy.
+
 ### Added
 
 - Dependency **`firebase-admin`** for Firebase ID token verification (`package.json`).

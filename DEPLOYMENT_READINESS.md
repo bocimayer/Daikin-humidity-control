@@ -29,6 +29,10 @@ There are two deployed services:
    - called by Cloud Scheduler with OIDC
    - reads humidity and controls Daikin devices
 
+### GitHub Actions deploy vs Cloud Run Console
+
+**`.github/workflows/deploy.yml`** applies runtime environment via **`gcloud run deploy --env-vars-file`**. Values come from **GitHub Environment `gcp` secrets** (see product **`README.md` → CI/CD**). A secret that is **missing** in `gcp` is written as **empty** to Cloud Run; a **successful deploy replaces** prior env for those keys. **Do not rely on setting `FIREBASE_WEB_API_KEY` (or `FIREBASE_PROJECT_ID`, `ALLOWED_OPS_EMAILS`, …) only in the GCP Console** if you deploy from `main` — the next pipeline run can wipe them and break **`GET /ops/scheduler`**.
+
 There are also two different kinds of auth state:
 
 1. Static credentials
@@ -120,7 +124,7 @@ You need jobs that call the main Cloud Run service over HTTPS with OIDC.
 
 **Pause / resume scheduled humidity (auto dry) without a redeploy:** from **`Daikin-humidity-control/`**, `bash setup/disable-auto-dry.sh` pauses job **`daikin-check-humidity`** only; `bash setup/enable-auto-dry.sh` resumes it. Npm: **`daikin:auto-dry:disable`** / **`daikin:auto-dry:enable`**. Nightly **`daikin-dry-stop-safety`** is unchanged. For an app-wide kill switch, use **`AUTOMATION_ENABLED=false`** (see `README.md`).
 
-**Browser UI (`/ops/scheduler`):** **Firebase Authentication** (Google) + **`FIREBASE_WEB_API_KEY`** on Cloud Run (see **`.github/workflows/deploy.yml`**). Operators use the Cloud Run **`https://…run.app/ops/scheduler`** URL (ingress is **allow-unauthenticated**; **`/tasks/*`** remains OIDC-only in the app). The **runtime** service account must verify Firebase tokens (**Firebase Authentication Admin** / Admin SDK) and call Cloud Scheduler on **`daikin-check-humidity`** (see **`setup/grant-runtime-scheduler-ops-iam.sh`**). Optional **`ALLOWED_OPS_EMAILS`**.
+**Browser UI (`/ops/scheduler`):** **Firebase Authentication** (Google). **`FIREBASE_WEB_API_KEY`** must be present on the **serving** revision — for **GitHub-based deploys**, define it in **Environment `gcp`** (not only Cloud Run console) or the next deploy empties it. See **`.github/workflows/deploy.yml`**. Operators use the Cloud Run **`https://…run.app/ops/scheduler`** URL (ingress is **allow-unauthenticated**; **`/tasks/*`** remains OIDC-only in the app). The **runtime** service account must verify Firebase tokens (**Firebase Authentication Admin** / Admin SDK) and call Cloud Scheduler on **`daikin-check-humidity`** (see **`setup/grant-runtime-scheduler-ops-iam.sh`**). **`ALLOWED_OPS_EMAILS`** in `gcp` for production `/ops` JSON.
 
 ---
 

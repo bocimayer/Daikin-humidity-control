@@ -81,7 +81,7 @@ Cloud Scheduler calls **`POST /tasks/check-humidity`** on a fixed cadence (for e
 
 Defaults for **`PROJECT_ID`** and **`REGION`** match **`setup/create-scheduler-jobs.sh`** (override with environment variables if needed). The active **`gcloud`** account needs permission to **pause / resume** that Scheduler job on the project. For a **service-wide** switch that skips `dry-start`, `dry-stop`, and `check-humidity` together, set **`AUTOMATION_ENABLED=false`** on Cloud Run (see env table above).
 
-**Browser (Firebase Auth + Google):** add Firebase to the **same GCP project** (Firebase Console → Authentication → **Google** sign-in). Under Authentication → **Settings** → **Authorized domains**, add your Cloud Run hostname (e.g. **`your-service-xxxxx-lm.a.run.app`**). Set **`FIREBASE_WEB_API_KEY`** (Project settings → Web app) plus **`GOOGLE_CLOUD_PROJECT`** / **`FIREBASE_PROJECT_ID`** on Cloud Run. Open **`https://<CLOUD_RUN_URL>/ops/scheduler`**, sign in with Google, then use **Disable / Enable**. APIs **`GET /ops/scheduler/state`** and **`POST /ops/scheduler`** require **`Authorization: Bearer <Firebase ID token>`** (handled by the page script). The runtime service account needs **`roles/firebaseauth.admin`** (or equivalent) to verify tokens via Admin SDK, plus Scheduler **get/pause/resume** on **`daikin-check-humidity`** — **`setup/grant-runtime-scheduler-ops-iam.sh`**. **Local only:** `NODE_ENV=development` and **`OPS_FIREBASE_BYPASS=1`** skip Firebase verification (**never** in production).
+**Browser (Firebase Auth + Google):** add Firebase to the **same GCP project** (Firebase Console → Authentication → **Google** sign-in). Under Authentication → **Settings** → **Authorized domains**, add your Cloud Run hostname (e.g. **`your-service-xxxxx-lm.a.run.app`**). Set **`FIREBASE_WEB_API_KEY`** (Project settings → web app) plus **`GOOGLE_CLOUD_PROJECT`** / **`FIREBASE_PROJECT_ID`** on Cloud Run. **If you deploy via GitHub Actions (`main`), those values must also exist as Environment `gcp` secrets** — see **CI/CD → GitHub secrets** below; otherwise the next deploy clears keys that were set only in the Console. Open **`https://<CLOUD_RUN_URL>/ops/scheduler`**, sign in with Google, then use **Disable / Enable**. APIs **`GET /ops/scheduler/state`** and **`POST /ops/scheduler`** require **`Authorization: Bearer <Firebase ID token>`** (handled by the page script). The runtime service account needs **`roles/firebaseauth.admin`** (or equivalent) to verify tokens via Admin SDK, plus Scheduler **get/pause/resume** on **`daikin-check-humidity`** — **`setup/grant-runtime-scheduler-ops-iam.sh`**. **Local only:** `NODE_ENV=development` and **`OPS_FIREBASE_BYPASS=1`** skip Firebase verification (**never** in production).
 
 **Mail test:** `POST /tasks/notify-test` with the same OIDC token as other `/tasks/*` routes (see `docs/PRODUCTION_SETUP.md`). Successful dry-start, dry-stop, and every check-humidity outcome also trigger mail when Gmail notify env vars are set.
 
@@ -118,7 +118,7 @@ Defaults for **`PROJECT_ID`** and **`REGION`** match **`setup/create-scheduler-j
 | `GMAIL_OAUTH_CLIENT_SECRET` | no | — | Optional — Gmail OAuth 2.0 client secret |
 | `GMAIL_REFRESH_TOKEN` | no | — | Optional — OAuth refresh token for the sending identity (store in Secret Manager / GitHub env in production; never commit) |
 | `NOTIFY_WEBHOOK_URL` | no | — | Optional — HTTPS URL for JSON POST when tasks complete (Zapier/Make/custom) |
-| `FIREBASE_WEB_API_KEY` | **yes** for ops UI | — | Firebase Console → Project settings → Your apps — **Web API key** (public; embedded in `/ops/scheduler` HTML for client sign-in). Without it, the ops page returns **503**. |
+| `FIREBASE_WEB_API_KEY` | **yes** for ops UI | — | Firebase Console → Web app **API key** (public). Without it, `/ops/scheduler` returns **503**. **On GitHub deploy:** set as **`gcp` Environment secret** so `deploy.yml` does not deploy an empty value (see **CI/CD**). |
 | `FIREBASE_AUTH_DOMAIN` | no | `<project>.firebaseapp.com` | Firebase Auth authorized-domain host (usually default when **`GOOGLE_CLOUD_PROJECT`** / **`FIREBASE_PROJECT_ID`** is set). |
 | `FIREBASE_PROJECT_ID` | no | falls back to **`GOOGLE_CLOUD_PROJECT`** | Firebase / GCP project id for Admin SDK + client `projectId`. |
 | `ALLOWED_OPS_EMAILS` | **yes** in production | — | Comma-separated Google **`email`** allowlist for `/ops` JSON routes. **Must be non-empty on Cloud Run** (`NODE_ENV=production`), or `/ops` APIs return **503**. In development, empty means any signed-in user (do not rely on this for prod). |
@@ -267,12 +267,18 @@ The script:
 
 After running bootstrap.sh, add the printed secrets to the GitHub **Environment** named **`gcp`** (the deploy workflows use `environment: gcp`), or mirror the same names as repository Actions secrets if you choose not to use environments.
 
+**Deploy overwrites Cloud Run env for every key in `deploy.yml`'s env file.** If a variable is **not** defined in **`gcp` Environment secrets**, it is deployed as **empty** (`''`) and **replaces** any value you previously set only in the **Google Cloud Console**. That is why **`FIREBASE_WEB_API_KEY`** — and, when you use them, **`FIREBASE_PROJECT_ID`**, **`ALLOWED_OPS_EMAILS`**, **`FIREBASE_AUTH_DOMAIN`** — must be stored in **`gcp`**, or **`GET /ops/scheduler`** turns into **503 Configuration error** after the next push to `main`.
+
 | Secret | Example value |
 |---|---|
 | `GCP_PROJECT_ID` | `my-gcp-project-123` |
 | `GCP_REGION` | `europe-central2` |
 | `GCP_DEPLOY_SA` | `daikin-deploy-sa@my-gcp-project-123.iam.gserviceaccount.com` |
 | `GCP_WORKLOAD_IDENTITY_PROVIDER` | `projects/123456/locations/global/workloadIdentityPools/github-pool/providers/github-provider` |
+| `FIREBASE_WEB_API_KEY` *(**required** for `/ops/scheduler` UI)* | Firebase Console → Project settings → Web app (public API key) — must be in `gcp` or deploy clears it |
+| `FIREBASE_PROJECT_ID` *(often **required**)* | Firebase project id if it differs from **`GCP_PROJECT_ID`** (e.g. `tihany-daikin` vs `…-humidity`) |
+| `FIREBASE_AUTH_DOMAIN` *(optional)* | Usually omit; app defaults to `<project>.firebaseapp.com` |
+| `ALLOWED_OPS_EMAILS` *(**required** for production `/ops` JSON)* | Comma-separated Google account emails for scheduler control |
 | `HEAT_TARGET_TEMP_C` *(optional)* | `16` |
 | `HUMIDITY_HIGH_THRESHOLD` *(optional)* | `70` |
 | `HUMIDITY_LOW_THRESHOLD` *(optional)* | `60` |
